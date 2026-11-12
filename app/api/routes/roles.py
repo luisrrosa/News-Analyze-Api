@@ -1,0 +1,34 @@
+from fastapi import APIRouter, Depends, Request
+
+from app.api.deps import ApiError, AuthContext, require
+from app.core.audit import write_audit
+from app.core.rbac import ALL_CLAIMS, SYSTEM_ROLES
+from app.services import users
+
+router = APIRouter(prefix="/roles", tags=["roles"])
+
+
+@router.get("")
+async def get_roles(ctx: AuthContext = Depends(require("users:manage"))):
+    return {"role_claims": await users.role_claims_map(), "all_claims": ALL_CLAIMS}
+
+
+@router.post("")
+async def set_role_claims(request: Request, ctx: AuthContext = Depends(require("users:manage"))):
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    role = body.get("role") if isinstance(body, dict) else None
+    claims = body.get("claims") if isinstance(body, dict) else None
+    if role not in SYSTEM_ROLES or not isinstance(claims, list) or not all(isinstance(c, str) for c in claims):
+        raise ApiError(400, "Parámetros inválidos (role y claims[] requeridos)")
+    try:
+        before, after = await users.set_role_claims(role, claims)
+    except users.UserError as e:
+        raise ApiError(400, str(e))
+    await write_audit(**ctx.actor(), action="ROLE_CLAIMS_UPDATED", entity_type="ROLE", entity_id=role, status="SUCCESS",
+                      details={"claims_added": [c for c in after if c not in before],
+                               "claims_removed": [c for c in before if c not in after]})
+    return {"success": True, "role": role, "role_claims": await users.role_claims_map(),
+            "message": f"Matriz de claims actualizada para el rol '{role}'"}

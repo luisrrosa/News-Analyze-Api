@@ -1,0 +1,41 @@
+# Entorno de desarrollo NEWS ANALYZE: api (FastAPI) + web (Next.js, repo ../newsAnalyze) + redis.
+# MongoDB sigue en Atlas (MONGODB_URI en .env). El navegador solo habla con web (puerto 3000);
+# web reenvía /api/v1/{auth,users,roles,audit} a la api por la red interna.
+#
+#   docker compose up --build
+#
+services:
+  api:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      COOKIE_SECURE: "false"          # desarrollo sobre http://localhost
+      TRUST_PROXY_HEADERS: "true"     # solo accesible desde web
+    expose:
+      - "8000"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../newsAnalyze
+      args:
+        API_INTERNAL_URL: http://api:8000
+    env_file: ../newsAnalyze/.env.local
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../newsAnalyze/storage:/app/storage   # PDF privados fuera de la imagen
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    restart: unless-stopped

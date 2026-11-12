@@ -1,0 +1,59 @@
+# NEWS ANALYZE API — integración continua (Azure DevOps)
+# Ejecuta las pruebas contra un MongoDB efímero y construye la imagen Docker.
+# Cualquier prueba fallida bloquea la fusión (configurar como política de rama en main).
+
+trigger:
+  branches:
+    include: [main, develop, feature/*, fix/*]
+
+pr:
+  branches:
+    include: [main, develop]
+
+pool:
+  vmImage: ubuntu-latest
+
+resources:
+  containers:
+    - container: mongo
+      image: mongo:7
+      ports:
+        - 27017:27017
+
+variables:
+  PYTHON_VERSION: '3.12'
+  TEST_MONGODB_URI: 'mongodb://localhost:27017'
+
+stages:
+  - stage: test
+    displayName: Pruebas
+    jobs:
+      - job: pytest
+        displayName: pytest (seguridad, RBAC, auditoría)
+        services:
+          mongo: mongo
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: $(PYTHON_VERSION)
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements-dev.txt
+            displayName: Instalar dependencias
+          - script: python -m pytest -q --junitxml=test-results.xml
+            displayName: Ejecutar pruebas
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: test-results.xml
+              testRunTitle: news-analyze-api
+
+  - stage: build
+    displayName: Imagen Docker
+    dependsOn: test
+    jobs:
+      - job: docker
+        steps:
+          # La publicación en Azure Container Registry se añade al definir la infraestructura (D-10).
+          - script: docker build -t news-analyze-api:$(Build.BuildId) .
+            displayName: Construir imagen
