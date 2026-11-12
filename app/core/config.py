@@ -37,6 +37,28 @@ class Settings(BaseSettings):
     login_rate_limit: int = 10
     login_rate_window_seconds: int = 300
 
+    # Documentos (Plan V3.0 §13 y §17)
+    storage_backend: str = "local"            # local | azure (pendiente de cuenta)
+    storage_root: str = "./storage"
+    documents_max_size_mb: int = Field(default=50, ge=1, le=200)
+    documents_max_pages: int = Field(default=200, ge=1, le=1000)
+    dedupe_window_days: int = Field(default=30, ge=1, le=365)
+
+    # Cola de trabajos (Celery + Redis). En pruebas, ejecución síncrona.
+    celery_broker_url: str = ""
+    celery_always_eager: bool = False
+    job_max_attempts: int = Field(default=3, ge=1, le=10)
+    job_lease_seconds: int = Field(default=120, ge=30, le=3600)
+
+    # Agente de ingesta por carpeta (Plan V3.0 §15)
+    ingest_folder: str = "./storage/inbox"
+    ingest_poll_seconds: int = Field(default=60, ge=5)
+    ingest_stable_seconds: int = Field(default=30, ge=1)
+
+    @property
+    def broker_url(self) -> str:
+        return self.celery_broker_url or self.redis_url or "memory://"
+
     @field_validator("jwt_secret_key", "hmac_audit_secret")
     @classmethod
     def no_placeholder(cls, v: str) -> str:

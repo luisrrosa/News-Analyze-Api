@@ -7,3 +7,8 @@ argon2-cffi==23.*
 PyJWT==2.*
 redis==5.*
 email-validator==2.*
+pymupdf==1.25.*
+celery[redis]==5.4.*
+pillow==11.*
+python-multipart==0.0.*
+kombu==5.4.*

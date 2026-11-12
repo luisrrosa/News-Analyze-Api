@@ -1,22 +1,53 @@
-# Entorno de desarrollo NEWS ANALYZE: api (FastAPI) + web (Next.js, repo ../newsAnalyze) + redis.
-# MongoDB sigue en Atlas (MONGODB_URI en .env). El navegador solo habla con web (puerto 3000);
-# web reenvía /api/v1/{auth,users,roles,audit} a la api por la red interna.
+# Entorno de desarrollo NEWS ANALYZE.
+#   api     FastAPI (autenticación, usuarios, roles, auditoría, documentos, noticias, revisión)
+#   worker  Celery: extracción de PDF
+#   beat    Celery beat: despachador del outbox (5 s) y reconciliación de trabajos caídos (60 s)
+#   agent   Agente de ingesta por carpeta (./storage/inbox)
+#   web     Next.js (repo ../newsAnalyze): interfaz y proxy /api/v1 → api
+#   redis   Broker de la cola
+# MongoDB sigue en Atlas (MONGODB_URI en .env). El navegador solo habla con web (puerto 3000).
 #
 #   docker compose up --build
 #
+x-api-common: &api-common
+  build: .
+  env_file: .env
+  environment:
+    REDIS_URL: redis://redis:6379/0
+    STORAGE_ROOT: /data/storage
+    INGEST_FOLDER: /data/storage/inbox
+    COOKIE_SECURE: "false"          # desarrollo sobre http://localhost
+    TRUST_PROXY_HEADERS: "true"     # la api solo es accesible desde web
+    MONGODB_DNS_SERVERS: ""         # dentro de Docker el DNS del contenedor resuelve mongodb+srv
+  volumes:
+    - ./storage:/data/storage       # PDF originales (fuera de la imagen)
+  depends_on:
+    - redis
+  restart: unless-stopped
+
 services:
   api:
-    build: .
-    env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      COOKIE_SECURE: "false"          # desarrollo sobre http://localhost
-      TRUST_PROXY_HEADERS: "true"     # solo accesible desde web
+    <<: *api-common
     expose:
       - "8000"
-    depends_on:
-      - redis
-    restart: unless-stopped
+
+  worker:
+    <<: *api-common
+    command: ["celery", "-A", "app.worker", "worker", "--loglevel=info", "--concurrency=2"]
+    healthcheck:
+      disable: true
+
+  beat:
+    <<: *api-common
+    command: ["celery", "-A", "app.worker", "beat", "--loglevel=info", "--schedule", "/tmp/celerybeat-schedule"]
+    healthcheck:
+      disable: true
+
+  agent:
+    <<: *api-common
+    command: ["python", "-m", "app.agents.folder_ingest"]
+    healthcheck:
+      disable: true
 
   web:
     build:
@@ -26,10 +57,9 @@ services:
     env_file: ../newsAnalyze/.env.local
     environment:
       API_INTERNAL_URL: http://api:8000
+      MONGODB_DNS_SERVERS: ""
     ports:
       - "3000:3000"
-    volumes:
-      - ../newsAnalyze/storage:/app/storage   # PDF privados fuera de la imagen
     depends_on:
       - api
     restart: unless-stopped

@@ -27,6 +27,27 @@ async def run_bootstrap(db: AsyncDatabase) -> None:
     await db["audit_logs"].create_index([("entity_type", ASCENDING), ("entity_id", ASCENDING)])
     await db["audit_logs"].create_index([("user_id", ASCENDING)])
 
+    # Dominio documental y periodístico (Plan V3.0 §4.6)
+    await db["documents"].create_index([("id", ASCENDING)], unique=True)
+    await db["documents"].create_index([("file_hash", ASCENDING)], unique=True)
+    await db["documents"].create_index([("status", ASCENDING), ("created_at", DESCENDING)])
+    await db["documents"].create_index([("summary_date", DESCENDING)])
+    await db["news"].create_index([("id", ASCENDING)], unique=True)
+    await db["news"].create_index([("document_id", ASCENDING), ("news_index", ASCENDING)], unique=True)
+    await db["news"].create_index([("summary_date", DESCENDING), ("media_name", ASCENDING)])
+    await db["news"].create_index([("created_at", DESCENDING)])
+    await db["news"].create_index([("is_duplicate", ASCENDING), ("canonical_news_id", ASCENDING)])
+    await db["news"].create_index([("article_section", ASCENDING)])
+    await db["news"].create_index([("review_status", ASCENDING)])
+    await db["news_reviews"].create_index([("news_id", ASCENDING), ("timestamp_utc", DESCENDING)])
+    await db["processing_jobs"].create_index([("id", ASCENDING)], unique=True)
+    await db["processing_jobs"].create_index([("idempotency_key", ASCENDING)], unique=True)
+    await db["processing_jobs"].create_index([("status", ASCENDING), ("lease_expires_at", ASCENDING)])
+    await db["processing_jobs"].create_index([("document_id", ASCENDING), ("job_type", ASCENDING)])
+    await db["outbox_events"].create_index([("id", ASCENDING)], unique=True)
+    await db["outbox_events"].create_index([("status", ASCENDING), ("created_at", ASCENDING)])
+    await db["system_configs"].create_index([("key", ASCENDING)], unique=True)
+
     now = iso_now()
     for code in SYSTEM_ROLES:
         await db["roles"].update_one(

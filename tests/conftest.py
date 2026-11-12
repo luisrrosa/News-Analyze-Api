@@ -6,6 +6,9 @@ import uuid
 import pytest
 import pytest_asyncio
 
+import tempfile
+
+_TMP = tempfile.mkdtemp(prefix="news_analyze_test_")
 ADMIN_EMAIL = "admin.test@local.test"
 ADMIN_PASSWORD = "Boot" + secrets.token_hex(6) + "X1"
 TEST_DB = f"news_analyze_pytest_{uuid.uuid4().hex[:10]}"
@@ -22,6 +25,10 @@ os.environ.update({
     "COOKIE_SECURE": "false",  # httpx de prueba usa http://
     "REDIS_URL": "",
     "REFRESH_GRACE_SECONDS": "45",
+    "CELERY_ALWAYS_EAGER": "true",       # el trabajo se ejecuta en el acto, sin broker
+    "STORAGE_ROOT": os.path.join(_TMP, "storage"),
+    "INGEST_FOLDER": os.path.join(_TMP, "inbox"),
+    "INGEST_STABLE_SECONDS": "1",
 })
 
 import httpx  # noqa: E402
@@ -49,6 +56,8 @@ async def app_ctx():
     async with app.router.lifespan_context(app):
         yield app
         await db.get_db().client.drop_database(TEST_DB)
+    import shutil
+    shutil.rmtree(_TMP, ignore_errors=True)
 
 
 @pytest_asyncio.fixture
