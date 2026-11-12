@@ -57,6 +57,13 @@ def create_app() -> FastAPI:
         log.exception("error no controlado")  # sin trazas internas hacia el cliente
         return JSONResponse({"error": "Error interno del servidor"}, status_code=500)
 
+    @app.get("/", include_in_schema=False)
+    async def root():
+        info = {"service": "NEWS ANALYZE API", "status": "ok", "health": "/api/health"}
+        if s.app_env == "development":
+            info["docs"] = "/api/docs"
+        return info
+
     @app.get("/api/health", tags=["health"])
     async def health():
         await db.get_db().command("ping")
