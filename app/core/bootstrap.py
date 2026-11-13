@@ -47,6 +47,13 @@ async def run_bootstrap(db: AsyncDatabase) -> None:
     await db["outbox_events"].create_index([("id", ASCENDING)], unique=True)
     await db["outbox_events"].create_index([("status", ASCENDING), ("created_at", ASCENDING)])
     await db["system_configs"].create_index([("key", ASCENDING)], unique=True)
+    # Catálogos y reglas (Plan V3.0 §4.4)
+    await db["rule_sets"].create_index([("version", ASCENDING)], unique=True)
+    await db["rule_sets"].create_index([("status", ASCENDING), ("approved_at", DESCENDING)])
+    await db["media_sources"].create_index([("id", ASCENDING)], unique=True)
+    await db["media_sources"].create_index([("name", ASCENDING)], unique=True)
+    await db["officeholders"].create_index([("id", ASCENDING)], unique=True)
+    await db["officeholders"].create_index([("position", ASCENDING), ("term_start", DESCENDING)])
 
     now = iso_now()
     for code in SYSTEM_ROLES:
@@ -64,6 +71,11 @@ async def run_bootstrap(db: AsyncDatabase) -> None:
             await db["roles"].update_one({"code": code}, {"$addToSet": {"claims": {"$each": claims}}})
         await db["system_configs"].update_one({"key": marker}, {"$set": {"key": marker, "applied_at": now}}, upsert=True)
         log.info("Migración de claims aplicada: %s", key)
+
+    from app.services.catalogs import ensure_seed_media
+    from app.services.rules import ensure_initial_rule_set
+    await ensure_initial_rule_set()
+    await ensure_seed_media()
 
     if await db["users"].count_documents({}, limit=1) > 0:
         return

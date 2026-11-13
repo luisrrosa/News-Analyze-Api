@@ -15,6 +15,7 @@ ALL_CLAIMS = [
     {"id": "documents:read", "name": "Visor de Resúmenes", "category": "documental", "description": "Visualizar páginas extraídas en visor streaming sin enlace directo"},
     {"id": "documents:upload", "name": "Carga de Documentos", "category": "documental", "description": "Subir resúmenes de prensa en formato PDF al sistema"},
     {"id": "documents:download", "name": "Descarga de PDF Original", "category": "documental", "description": "Descargar archivo binario original (Exclusivo Admin/Editor; denegado a Consulta/Auditor)"},
+    {"id": "catalogs:manage", "name": "Catálogos de Medios y Cargos", "category": "gobernanza", "description": "Administrar medios, alias y el catálogo de cargos y funcionarios"},
     {"id": "topics:manage", "name": "Catálogo de Tópicos", "category": "gobernanza", "description": "Administrar la taxonomía de los 32 tópicos provisorios"},
     {"id": "triage:calibrate", "name": "Calibración de Triaje", "category": "gobernanza", "description": "Ajustar ponderaciones de factores de criticidad (V0.3 Simulación)"},
     {"id": "reports:read", "name": "Consulta de Reportes", "category": "redaccion", "description": "Consultar reportes e indicadores del período"},
@@ -32,7 +33,7 @@ ROLE_CLAIMS: dict[str, list[str]] = {
         "dashboard:read", "news:read", "documents:read", "documents:download", "documents:upload",
         "news:edit", "news:review", "news:approve", "topics:manage", "triage:calibrate",
         "audit:read", "users:manage", "system:reprocess", "config:manage", "config:read",
-        "reports:read", "reports:export",
+        "reports:read", "reports:export", "catalogs:manage",
     ],
     "editor": [
         "dashboard:read", "news:read", "documents:read", "documents:download", "documents:upload",
@@ -53,4 +54,5 @@ CLAIM_MIGRATIONS = [
         "consulta": ["reports:read"],
         "auditor": ["reports:read"],
     }),
+    ("claims_catalogs_v1", {"admin": ["catalogs:manage"]}),
 ]

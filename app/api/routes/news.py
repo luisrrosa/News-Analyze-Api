@@ -6,6 +6,7 @@ from app.api.compat import news_out
 from app.api.dates import summary_date_filter
 from app.api.deps import ApiError, AuthContext, require
 from app.services.stats import period_stats, summary_dates
+from app.services.topics import topic_breakdown
 from app.core.audit import write_audit
 from app.core.db import get_db, iso_now
 
@@ -56,6 +57,13 @@ async def news_stats(date_from: str | None = None, date_to: str | None = None,
                      ctx: AuthContext = Depends(require("news:read"))):
     f = summary_date_filter(date_from, date_to)
     return {"date_from": date_from, "date_to": date_to, **await period_stats(f, f)}
+
+
+@router.get("/news/topics")
+async def news_topics(date_from: str | None = None, date_to: str | None = None,
+                      ctx: AuthContext = Depends(require("news:read"))):
+    """Radar: noticias del período por tema del catálogo vigente (clasificación provisional por sinónimos)."""
+    return await topic_breakdown(summary_date_filter(date_from, date_to))
 
 
 @router.get("/news/{news_id}")

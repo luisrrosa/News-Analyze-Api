@@ -88,6 +88,9 @@ class Session:
     async def put(self, path: str, **kw):
         return await self.client.put(path, headers=self.headers(kw.pop("headers", None)), **kw)
 
+    async def delete(self, path: str, **kw):
+        return await self.client.delete(path, headers=self.headers(kw.pop("headers", None)), **kw)
+
 
 async def login(client: httpx.AsyncClient, email: str, password: str, ip: str | None = None) -> httpx.Response:
     return await client.post("/api/v1/auth/login", json={"email": email, "password": password},

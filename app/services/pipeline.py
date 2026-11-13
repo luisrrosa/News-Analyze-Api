@@ -109,7 +109,8 @@ async def process_job(job_id: str) -> str:
         data = get_storage().get(document["storage_key"])
         if data is None:
             raise PermanentError("El archivo original no está en el almacenamiento")
-        result = extract(data)
+        from app.services.catalogs import media_alias_map
+        result = extract(data, await media_alias_map() or None)
         if not result.items:
             raise PermanentError("No se identificó ninguna noticia en el documento")
 

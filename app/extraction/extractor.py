@@ -39,7 +39,8 @@ SPANISH_MONTHS = {m: i for i, m in enumerate(
      "septiembre", "octubre", "noviembre", "diciembre"], start=1)}
 SUMMARY_DATE_RE = re.compile(r"(?P<d>\d{1,2})\s+(?:de\s+)?(?P<m>[a-záéíóú]+)\s+(?:de\s+)?(?P<y>\d{4})", re.I)
 
-# Tabla de alias de medios (Plan V3.0 §5.4). Un medio desconocido no se inventa: se marca media_unresolved.
+# Tabla de alias de referencia (semilla del catálogo media_sources, Plan V3.0 §5.4).
+# Un medio desconocido no se inventa: se marca media_unresolved.
 MEDIA_ALIASES = {
     "diario libre": "Diario Libre",
     "listín diario": "Listín Diario", "listin diario": "Listín Diario",
@@ -164,12 +165,14 @@ def _parse_summary_date(text: str) -> str | None:
         return None
 
 
-def _resolve_media(raw: str) -> str | None:
-    return MEDIA_ALIASES.get(_collapse(raw).lower())
+def _resolve_media(raw: str, aliases: dict[str, str] | None = None) -> str | None:
+    return (aliases if aliases is not None else MEDIA_ALIASES).get(_collapse(raw).lower())
 
 
 class _Builder:
-    def __init__(self, header: Line, match: re.Match, block: str | None, index: int):
+    def __init__(self, header: Line, match: re.Match, block: str | None, index: int,
+                 aliases: dict[str, str] | None = None):
+        self.aliases = aliases
         self.header = header
         self.match = match
         self.block = block
@@ -226,7 +229,7 @@ class _Builder:
         url = self.urls[0] if self.urls else None
         if len(self.urls) > 1:
             self.flags.append("multiple_urls")
-        media_name = _resolve_media(m["media"])
+        media_name = _resolve_media(m["media"], self.aliases)
         if media_name is None:
             self.flags.append("media_unresolved")
         if not title:
@@ -284,7 +287,8 @@ class _Builder:
         )
 
 
-def extract(pdf_bytes: bytes) -> ExtractionResult:
+def extract(pdf_bytes: bytes, media_aliases: dict[str, str] | None = None) -> ExtractionResult:
+    """media_aliases: alias normalizado → nombre (catálogo media_sources). Sin él, la tabla de referencia."""
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     try:
         warnings: list[str] = []
@@ -339,7 +343,7 @@ def extract(pdf_bytes: bytes) -> ExtractionResult:
                 if hm:
                     if current:
                         items.append(current.build(summary_date))
-                    current = _Builder(line, hm, block, len(items) + 1)
+                    current = _Builder(line, hm, block, len(items) + 1, media_aliases)
                     previous_was_header = True
                     continue
 
