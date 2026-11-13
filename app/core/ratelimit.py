@@ -25,10 +25,12 @@ async def hit(key: str, limit: int, window_seconds: int) -> tuple[bool, int]:
     if r is not None:
         try:
             k = f"rl:{key}"
-            count = await r.incr(k)
-            if count == 1:
-                await r.expire(k, window_seconds)
-            ttl = await r.ttl(k)
+            # Atómico: la clave nace con su vencimiento (no puede quedar sin TTL y bloquear para siempre).
+            async with r.pipeline(transaction=True) as pipe:
+                pipe.set(k, 0, ex=window_seconds, nx=True)
+                pipe.incr(k)
+                pipe.ttl(k)
+                _, count, ttl = await pipe.execute()
             return count <= limit, max(int(ttl), 0)
         except Exception:
             pass  # Redis caído: se degrada a memoria antes que bloquear el login

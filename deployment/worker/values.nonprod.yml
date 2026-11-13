@@ -36,3 +36,9 @@ resources:
   limits:
     cpu: "1"
     memory: 1536Mi
+
+# El worker no recibe conexiones.
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: ingress-nginx
+  allowSameNamespace: false

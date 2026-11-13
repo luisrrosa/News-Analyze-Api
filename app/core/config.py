@@ -10,7 +10,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_env: str = "development"
+    # Por defecto producción: en desarrollo hay que declararlo (APP_ENV=development) para ver /api/docs.
+    app_env: str = "production"
 
     mongodb_uri: str
     mongodb_db_name: str = "news_analize"

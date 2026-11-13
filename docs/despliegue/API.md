@@ -105,6 +105,22 @@ docker run --rm --network na --env-file .env -e STORAGE_BACKEND=memory -e REDIS_
 docker run --rm --network na --env-file .env -e STORAGE_BACKEND=memory -e REDIS_URL=redis://:clave@news-analyze-redis:6379/0 news-analyze-api:local worker
 ```
 
+## 8. Seguridad de red, secretos y capacidad (revisión 2026-11)
+
+- **NetworkPolicy:** los values la activan (solo la web llega a la API; solo la API y el worker a Redis). Requiere el
+  chart `devops-template` con `networkPolicy` (la versión actual de `devops.templates` la tiene) y un clúster con
+  política de red (Azure CNI `azure` o `calico`). Si el chart 1.0.91 no la genera: `kubectl -n <ns> apply -f deployment/networkpolicy.yaml`.
+- **SFTP en producción:** `NEWS_ANALYZE_SFTP_HOST_KEY` es obligatoria (sin ella la API no se conecta al file server).
+- **Secretos:** hoy viajan como `image.env` (igual que RecargaDO/LECO), visibles para quien pueda leer el Deployment.
+  Recomendado al subir el chart: `secretEnv` desde un Secret de Kubernetes o `keyVault` (CSI de Azure Key Vault), y
+  restringir el RBAC del namespace. Con `JWT_SECRET_KEY` se pueden falsificar sesiones; con `HMAC_AUDIT_SECRET`, la auditoría.
+- **Auditoría:** el worker escribe cada hora un ancla firmada de la cabeza de la cadena (también en su log:
+  `AUDIT_ANCHOR seq=…`) y verifica la cadena completa cada día (`AUDIT_CHAIN_BROKEN` en el log si falla). Conviene
+  enviar esos logs a Log Analytics: un ancla fuera de MongoDB detecta que se borren los últimos registros.
+- **Capacidad de MongoDB Atlas:** en la prueba de carga (k6, 20 usuarios) el límite fue Atlas, no la API (los procesos
+  estaban casi siempre esperando a la BD). Para producción usar un clúster dedicado (M10 o superior); el gratuito M0
+  limita las operaciones por segundo.
+
 ## Por confirmar con DevOps
 
 - Que el chart `devops-template` 1.0.91 lea `image.env`, `service.port`, `ingress.enabled: false` y las sondas como el chart actual de `devops.templates`.

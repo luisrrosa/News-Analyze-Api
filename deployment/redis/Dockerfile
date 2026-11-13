@@ -10,4 +10,4 @@ EXPOSE 6379
 # Contraseña obligatoria (REDIS_PASSWORD, desde el grupo de variables). Límite de memoria con desalojo de las
 # claves que vencen (copias temporales de PDF); la cola de Celery no vence. Sin RDB ni AOF.
 ENTRYPOINT []
-CMD ["sh", "-c", "test -n \"$REDIS_PASSWORD\" || { echo 'Falta REDIS_PASSWORD' >&2; exit 1; }; exec redis-server --port 6379 --requirepass \"$REDIS_PASSWORD\" --save '' --appendonly no --maxmemory ${REDIS_MAXMEMORY:-200mb} --maxmemory-policy volatile-lru --protected-mode no"]
+CMD ["sh", "-c", "test -n \"$REDIS_PASSWORD\" || { echo 'Falta REDIS_PASSWORD' >&2; exit 1; }; exec redis-server --port 6379 --requirepass \"$REDIS_PASSWORD\" --save '' --appendonly no --maxmemory ${REDIS_MAXMEMORY:-450mb} --maxmemory-policy volatile-lru --protected-mode no --rename-command FLUSHALL '' --rename-command FLUSHDB '' --rename-command CONFIG '' --rename-command DEBUG ''"]

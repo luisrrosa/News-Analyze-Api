@@ -10,7 +10,7 @@ from app.core.audit import write_audit
 from app.core.config import get_settings
 from app.core.db import iso_now
 from app.core.passwords import hash_password, password_policy_error
-from app.core.rbac import CLAIM_MIGRATIONS, ROLE_CLAIMS, SYSTEM_ROLES
+from app.core.rbac import CLAIM_IDS, CLAIM_MIGRATIONS, CLAIM_SPLITS, ROLE_CLAIMS, SYSTEM_ROLES
 
 log = logging.getLogger("bootstrap")
 
@@ -27,12 +27,25 @@ async def run_bootstrap(db: AsyncDatabase) -> None:
     await db["audit_logs"].create_index([("timestamp_utc", DESCENDING)])
     await db["audit_logs"].create_index([("entity_type", ASCENDING), ("entity_id", ASCENDING)])
     await db["audit_logs"].create_index([("user_id", ASCENDING)])
+    await db["audit_logs"].create_index([("user_email", ASCENDING), ("seq_num", DESCENDING)])
+    await db["audit_logs"].create_index([("timestamp_utc", DESCENDING), ("seq_num", DESCENDING)])
+    await db["audit_anchors"].create_index([("seq_num", DESCENDING)])
+    await db["viewer_access"].create_index([("key", ASCENDING)], unique=True)
+    await db["viewer_access"].create_index([("created_at", ASCENDING)], expireAfterSeconds=7200)
+    # Explorador, ficha y revisión (consultas reales): orden por defecto, relacionadas y cola.
+    await db["news"].create_index([("summary_date", DESCENDING), ("document_id", ASCENDING), ("news_index", ASCENDING)])
+    await db["news"].create_index([("canonical_news_id", ASCENDING)], sparse=True)
+    await db["news"].create_index([("related_news_ids", ASCENDING)])
+    await db["news"].create_index([("review_status", ASCENDING), ("summary_date", DESCENDING), ("news_index", ASCENDING)])
+    await db["news"].create_index([("media_name", ASCENDING), ("summary_date", DESCENDING)])
 
     # Dominio documental y periodístico (Plan V3.0 §4.6)
     await db["documents"].create_index([("id", ASCENDING)], unique=True)
     await db["documents"].create_index([("file_hash", ASCENDING)], unique=True)
     await db["documents"].create_index([("status", ASCENDING), ("created_at", DESCENDING)])
     await db["documents"].create_index([("summary_date", DESCENDING)])
+    await db["documents"].create_index([("updated_at", DESCENDING)])
+    await db["news"].create_index([("updated_at", DESCENDING)])
     await db["news"].create_index([("id", ASCENDING)], unique=True)
     await db["news"].create_index([("document_id", ASCENDING), ("news_index", ASCENDING)], unique=True)
     await db["news"].create_index([("summary_date", DESCENDING), ("media_name", ASCENDING)])
@@ -73,6 +86,22 @@ async def run_bootstrap(db: AsyncDatabase) -> None:
             continue
         for code, claims in grants.items():
             await db["roles"].update_one({"code": code}, {"$addToSet": {"claims": {"$each": claims}}})
+        await db["system_configs"].update_one({"key": marker}, {"$set": {"key": marker, "applied_at": now}}, upsert=True)
+        log.info("Migración de claims aplicada: %s", key)
+
+    # Claims divididos (un claim por acción): se agregan los específicos y se quitan los que ya no existen.
+    for key, rules in CLAIM_SPLITS:
+        marker = f"migration.{key}"
+        if await db["system_configs"].find_one({"key": marker}):
+            continue
+        async for role in db["roles"].find({}):
+            have = set(role.get("claims") or [])
+            new = set(have)
+            for required, granted in rules:
+                if all(c in have for c in required):
+                    new.update(granted)
+            new = sorted(c for c in new if c in CLAIM_IDS)
+            await db["roles"].update_one({"_id": role["_id"]}, {"$set": {"claims": new, "updated_at": now}})
         await db["system_configs"].update_one({"key": marker}, {"$set": {"key": marker, "applied_at": now}}, upsert=True)
         log.info("Migración de claims aplicada: %s", key)
 

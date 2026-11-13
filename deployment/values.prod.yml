@@ -46,3 +46,16 @@ resources:
   limits:
     cpu: "1"
     memory: 1Gi
+
+# Solo la web (y el ingress, que esta API no usa) puede llamar a la API: nadie más del namespace compartido.
+# Necesita un chart con networkPolicy (devops-template >= 1.1.0) y un clúster con política de red (azure/calico).
+# Si el chart 1.0.91 no lo soporta, aplicar deployment/networkpolicy.yaml (ver docs/despliegue/API.md).
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: ingress-nginx
+  allowSameNamespace: false
+  extraIngress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: news-analyze-web

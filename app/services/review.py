@@ -147,7 +147,8 @@ async def _validate_changes(news: dict, changes: dict, claims: list[str]) -> lis
                 raise ReviewError("Autor inválido")
             value = (value or "").strip() or None
         elif field == "media_name":
-            if not await db["media_sources"].find_one({"name": value, "status": "active"}):
+            # Solo texto: un objeto ({"$exists": true}) sería un operador de consulta, no un nombre.
+            if not isinstance(value, str) or not await db["media_sources"].find_one({"name": value, "status": "active"}):
                 raise ReviewError("El medio debe existir y estar activo en el catálogo de medios")
         elif field == "content_type":
             if value not in CONTENT_TYPES:
@@ -169,16 +170,16 @@ async def _validate_changes(news: dict, changes: dict, claims: list[str]) -> lis
             from app.services.rules import get_effective
             rule_set, _ = await get_effective()
             codes = {t["code"] for t in (rule_set or {}).get("topics", []) if t.get("active")}
-            if not isinstance(value, list) or any(c not in codes for c in value):
+            if not isinstance(value, list) or any(not isinstance(c, str) or c not in codes for c in value):
                 raise ReviewError("Los temas deben ser códigos activos del catálogo")
             value = sorted(set(value))
         elif field == "canonical_news_id":
             if value is not None:
-                if value == news["id"] or not await db["news"].find_one({"id": value}):
+                if not isinstance(value, str) or value == news["id"] or not await db["news"].find_one({"id": value}):
                     raise ReviewError("La noticia original indicada no existe")
         elif field == "related_news_ids":
-            if not isinstance(value, list):
-                raise ReviewError("Las relacionadas deben ser una lista")
+            if not isinstance(value, list) or any(not isinstance(v, str) for v in value) or len(value) > 50:
+                raise ReviewError("Las relacionadas deben ser una lista de identificadores de noticia")
             value = sorted(set(value) - {news["id"]})
             if value and await db["news"].count_documents({"id": {"$in": value}}) != len(value):
                 raise ReviewError("Alguna noticia relacionada no existe")
@@ -203,10 +204,13 @@ async def propose(news_id: str, changes: dict, justification: str, user: dict, c
         "proposed_by": user["id"], "proposed_by_email": user["email"], "proposed_at": iso_now(),
         "decided_by": None, "decided_by_email": None, "decided_at": None, "decision_note": None,
     }
+    res = await get_db()["news"].update_one(
+        {"id": news_id, "review_status": "in_review", "review_assigned_to": user["id"], "pending_review_id": None},
+        {"$set": {"review_status": "pending_approval", "pending_review_id": review["id"],
+                  "review_assigned_to": None, "review_locked_until": None, "updated_at": iso_now()}})
+    if res.modified_count != 1:
+        raise ReviewError("La noticia ya no está tomada por usted o tiene otra propuesta pendiente", 409)
     await get_db()["news_reviews"].insert_one(dict(review))
-    await get_db()["news"].update_one({"id": news_id}, {"$set": {
-        "review_status": "pending_approval", "pending_review_id": review["id"],
-        "review_assigned_to": None, "review_locked_until": None, "updated_at": iso_now()}})
     return review
 
 
@@ -219,12 +223,41 @@ async def _get_proposal(review_id: str) -> dict:
     return r
 
 
+async def _claim_proposal(review_id: str, user: dict) -> dict:
+    """Pasa la propuesta de 'proposed' a 'deciding' de forma atómica: solo una decisión gana."""
+    from pymongo import ReturnDocument
+    r = await get_db()["news_reviews"].find_one_and_update(
+        {"id": review_id, "status": "proposed"},
+        {"$set": {"status": "deciding", "deciding_by": user["id"], "deciding_at": iso_now()}},
+        return_document=ReturnDocument.BEFORE)
+    if not r:
+        await _get_proposal(review_id)  # 404 si no existe; 409 si ya se resolvió
+        raise ReviewError("La propuesta ya fue resuelta", 409)
+    return r
+
+
+async def _unclaim(review_id: str) -> None:
+    await get_db()["news_reviews"].update_one({"id": review_id, "status": "deciding"},
+                                              {"$set": {"status": "proposed"}, "$unset": {"deciding_by": "", "deciding_at": ""}})
+
+
 async def approve(review_id: str, user: dict, note: str) -> tuple[dict, dict]:
     r = await _get_proposal(review_id)
     if r["proposed_by"] == user["id"]:
         raise ReviewError("Doble control: quien propone una corrección no puede aprobarla", 403)
+    r = await _claim_proposal(review_id, user)
+    try:
+        return await _apply_approval(r, review_id, user, note)
+    except Exception:
+        await _unclaim(review_id)
+        raise
+
+
+async def _apply_approval(r: dict, review_id: str, user: dict, note: str) -> tuple[dict, dict]:
     db = get_db()
     n = await db["news"].find_one({"id": r["news_id"]})
+    if not n or n.get("pending_review_id") != review_id or n.get("review_status") != "pending_approval":
+        raise ReviewError("La noticia ya no espera esta propuesta (fue resuelta o reemplazada)", 409)
     now = iso_now()
     updates: dict = {}
     for ch in r["changes"]:
@@ -246,7 +279,9 @@ async def approve(review_id: str, user: dict, note: str) -> tuple[dict, dict]:
         "corrected_fields": sorted(set(n.get("corrected_fields") or []) | fields),
         "last_corrected_at": now, "updated_at": now,
     })
-    await db["news"].update_one({"id": n["id"]}, {"$set": updates})
+    res = await db["news"].update_one({"id": n["id"], "pending_review_id": review_id}, {"$set": updates})
+    if res.modified_count != 1:
+        raise ReviewError("La noticia cambió mientras se aprobaba; vuelva a revisarla", 409)
     await db["news_reviews"].update_one({"id": review_id}, {"$set": {
         "status": "approved", "decided_by": user["id"], "decided_by_email": user["email"],
         "decided_at": now, "decision_note": (note or "").strip()[:2000] or None}})
@@ -254,16 +289,17 @@ async def approve(review_id: str, user: dict, note: str) -> tuple[dict, dict]:
 
 
 async def return_proposal(review_id: str, user: dict, note: str) -> dict:
-    r = await _get_proposal(review_id)
+    await _get_proposal(review_id)
     note = (note or "").strip()
     if len(note) < 5:
         raise ReviewError("Indique el motivo de la devolución")
+    r = await _claim_proposal(review_id, user)
     now = iso_now()
+    await get_db()["news"].update_one({"id": r["news_id"], "pending_review_id": review_id}, {"$set": {
+        "review_status": "pending_review", "pending_review_id": None, "updated_at": now}})
     await get_db()["news_reviews"].update_one({"id": review_id}, {"$set": {
         "status": "returned", "decided_by": user["id"], "decided_by_email": user["email"],
-        "decided_at": now, "decision_note": note[:2000]}})
-    await get_db()["news"].update_one({"id": r["news_id"]}, {"$set": {
-        "review_status": "pending_review", "pending_review_id": None, "updated_at": now}})
+        "decided_at": now, "decision_note": note[:2000]}, "$unset": {"deciding_by": "", "deciding_at": ""}})
     return r
 
 

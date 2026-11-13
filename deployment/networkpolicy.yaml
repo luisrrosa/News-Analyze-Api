@@ -1,0 +1,49 @@
+# NetworkPolicies de NEWS ANALYZE para aplicar a mano si el chart no las genera:
+#   kubectl -n placebet-develop apply -f deployment/networkpolicy.yaml   (y -n placebet en producción)
+# API: solo desde la web. Redis: solo desde la API y el worker. Requiere política de red en el clúster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: news-analyze-api-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: news-analyze-api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: news-analyze-web
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: news-analyze-redis-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: news-analyze-redis
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: news-analyze-api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: news-analyze-worker
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: news-analyze-worker-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: news-analyze-worker
+  policyTypes: [Ingress]
+  ingress: []

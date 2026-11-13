@@ -82,12 +82,34 @@ async def period_stats(news_match: dict, doc_match: dict) -> dict:
 
 
 async def summary_dates(limit: int = 120) -> list[dict]:
-    """Días con resúmenes procesados, del más reciente al más antiguo."""
-    rows = []
-    async for row in await get_db()["news"].aggregate([
-        {"$group": {"_id": "$summary_date", "n": {"$sum": 1}}},
-        {"$match": {"_id": {"$ne": None}}},
-        {"$sort": {"_id": -1}}, {"$limit": limit},
-    ]):
-        rows.append({"date": row["_id"], "news": row["n"]})
-    return rows
+    """Días con resúmenes procesados, del más reciente al más antiguo (desde documents: barato e indexado)."""
+    rows: dict[str, int] = {}
+    async for d in get_db()["documents"].find(
+            {"status": {"$in": ["completed", "completed_with_warnings"]}, "summary_date": {"$ne": None}},
+            projection={"_id": 0, "summary_date": 1, "items_total": 1}).sort("summary_date", -1).limit(limit * 3):
+        rows[d["summary_date"]] = rows.get(d["summary_date"], 0) + int(d.get("items_total") or 0)
+        if len(rows) >= limit:
+            break
+    return [{"date": k, "news": v} for k, v in rows.items()]
+
+
+# Caché corta de las estadísticas del período: varias pantallas y usuarios piden lo mismo; los datos
+# cambian pocas veces al día. La clave incluye la última actualización de documentos y noticias.
+_STATS_CACHE: dict = {}
+
+
+async def cached_period_stats(news_match: dict, doc_match: dict) -> dict:
+    import time
+    db = get_db()
+    last_doc = await db["documents"].find_one({}, projection={"_id": 0, "updated_at": 1}, sort=[("updated_at", -1)])
+    last_news = await db["news"].find_one({}, projection={"_id": 0, "updated_at": 1}, sort=[("updated_at", -1)])
+    key = (repr(sorted(news_match.items())), repr(sorted(doc_match.items())),
+           (last_doc or {}).get("updated_at"), (last_news or {}).get("updated_at"))
+    hit = _STATS_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < 60:
+        return hit[1]
+    value = await period_stats(news_match, doc_match)
+    if len(_STATS_CACHE) > 64:
+        _STATS_CACHE.clear()
+    _STATS_CACHE[key] = (time.monotonic(), value)
+    return value

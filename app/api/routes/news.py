@@ -3,14 +3,14 @@ import io
 import re
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 
 from app.api.compat import news_out
 from app.api.dates import summary_date_filter
-from app.api.deps import ApiError, AuthContext, require
-from app.services.stats import period_stats, summary_dates
+from app.api.deps import ApiError, AuthContext, require, require_any
+from app.services.stats import cached_period_stats, summary_dates
 from app.services.topics import topic_breakdown
-from app.core.audit import write_audit
+from app.core.audit import write_audit, write_audit_required
 from app.core.db import get_db, iso_now
 
 router = APIRouter(tags=["news"])
@@ -76,7 +76,7 @@ def filter_params(
                              multi_page, is_duplicate, related, review_status, document_id)
 
 
-async def find_news(query: dict, sort: str, skip: int, limit: int) -> list[dict]:
+async def find_news(query: dict, sort: str, skip: int, limit: int, projection: dict | None = None) -> list[dict]:
     col = get_db()["news"]
     if sort == "destaque":
         pipeline = [
@@ -85,8 +85,26 @@ async def find_news(query: dict, sort: str, skip: int, limit: int) -> list[dict]
                 {"case": {"$eq": ["$source_destaque", k]}, "then": v} for k, v in DESTAQUE_RANK.items()], "default": 9}}}},
             {"$sort": dict(SORTS["destaque"])}, {"$skip": skip}, {"$limit": limit},
         ]
+        if projection:
+            pipeline.append({"$project": projection})
         return [d async for d in await col.aggregate(pipeline)]
-    return [d async for d in col.find(query).sort(SORTS.get(sort, SORTS["recent"])).skip(skip).limit(limit)]
+    return [d async for d in col.find(query, projection=projection).sort(SORTS.get(sort, SORTS["recent"])).skip(skip).limit(limit)]
+
+
+# Listado: sin el texto completo (solo un extracto); el texto va en GET /news/{id}.
+LIST_PROJECTION = {"text_original": 0, "header_raw": 0, "quality": 0, "simhash": 0, "original_extraction": 0}
+CSV_FIELDS = ["summary_date", "publication_date", "date_basis", "media_name", "media_raw", "article_section",
+              "content_type", "source_destaque", "source_page_number", "source_page_to", "pdf_page_indices", "author_raw",
+              "title", "body", "url", "provisional_topics", "is_duplicate", "related_news_ids", "review_status",
+              "document_id", "news_index"]
+CSV_MAX_ROWS = 50000
+
+
+def _csv_cell(value):
+    """Evita la inyección de fórmulas al abrir el CSV en Excel (texto que viene de los PDF)."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 @router.get("/news")
@@ -95,7 +113,13 @@ async def list_news(
     query: dict = Depends(filter_params), ctx: AuthContext = Depends(require("news:read")),
 ):
     total = await get_db()["news"].count_documents(query)
-    items = [news_out(n) for n in await find_news(query, sort, (page - 1) * limit, limit)]
+    items = []
+    for n in await find_news(query, sort, (page - 1) * limit, limit, LIST_PROJECTION):
+        out = news_out(n)
+        body = out.get("body") or ""
+        out["body"] = body[:400] + ("…" if len(body) > 400 else "")
+        out["body_truncated"] = len(body) > 400
+        items.append(out)
     return {"items": items, "total": total, "page": page, "limit": limit, "totalPages": -(-total // limit)}
 
 
@@ -118,29 +142,48 @@ CSV_HEADER = ["Fecha del resumen", "Fecha de publicación", "Base de la fecha", 
 
 @router.get("/news/export.csv")
 async def export_csv(sort: str = "recent", query: dict = Depends(filter_params),
-                     ctx: AuthContext = Depends(require("reports:export"))):
-    """CSV del listado filtrado: UTF-8 con BOM y punto y coma (Excel en español). Plan V3.0 §16."""
-    rows = await find_news(query, sort, 0, 50000)
-    buf = io.StringIO()
-    w = csv.writer(buf, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
-    w.writerow(CSV_HEADER)
-    for n in rows:
-        w.writerow([n.get("summary_date"), n.get("publication_date"), n.get("date_basis"),
+                     ctx: AuthContext = Depends(require("reports:export_csv"))):
+    """CSV del listado filtrado: UTF-8 con BOM y punto y coma (Excel en español). Plan V3.0 §16.
+    Se envía por partes (lotes de 1000) con solo las columnas del CSV; la auditoría se escribe antes de enviar."""
+    total = min(await get_db()["news"].count_documents(query), CSV_MAX_ROWS)
+    filters = {k: v for k, v in query.items() if k != "$or"}
+    await write_audit_required(**ctx.actor(), action="REPORT_EXPORTED", entity_type="REPORT", entity_id="news_csv",
+                               status="SUCCESS", details={"format": "csv", "rows": total, "filters": str(filters)[:500]})
+    projection = {f: 1 for f in CSV_FIELDS} | {"_id": 0}
+
+    async def rows():
+        yield ("\ufeff" + _csv_line(CSV_HEADER)).encode("utf-8")
+        sent = 0
+        while sent < total:
+            batch = await find_news(query, sort, sent, min(1000, total - sent), projection)
+            if not batch:
+                break
+            chunk = []
+            for n in batch:
+                chunk.append(_csv_line([
+                    n.get("summary_date"), n.get("publication_date"), n.get("date_basis"),
                     n.get("media_name") or n.get("media_raw"), n.get("article_section"), n.get("content_type"),
                     n.get("source_destaque"), news_out(n)["source_page_label"],
                     ", ".join(map(str, n.get("pdf_page_indices", []))), n.get("author_raw"), n.get("title"),
                     n.get("body"), n.get("url"), ", ".join(n.get("provisional_topics") or []),
                     "sí" if n.get("is_duplicate") else "no", len(n.get("related_news_ids") or []),
-                    n.get("review_status"), n.get("document_id"), n.get("news_index")])
-    filters = {k: v for k, v in query.items() if k != "$or"}
-    await write_audit(**ctx.actor(), action="REPORT_EXPORTED", entity_type="REPORT", entity_id="news_csv",
-                      status="SUCCESS", details={"format": "csv", "rows": len(rows), "filters": str(filters)[:500]})
-    return Response(("﻿" + buf.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8", headers={
+                    n.get("review_status"), n.get("document_id"), n.get("news_index")]))
+            sent += len(batch)
+            yield "".join(chunk).encode("utf-8")
+
+    return StreamingResponse(rows(), media_type="text/csv; charset=utf-8", headers={
         "Content-Disposition": 'attachment; filename="noticias.csv"', "Cache-Control": "no-store"})
 
 
+def _csv_line(values: list) -> str:
+    buf = io.StringIO()
+    csv.writer(buf, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n").writerow([_csv_cell(v) for v in values])
+    return buf.getvalue()
+
+
 @router.get("/news/summary-dates")
-async def list_summary_dates(ctx: AuthContext = Depends(require("news:read"))):
+async def list_summary_dates(ctx: AuthContext = Depends(require())):
+    # Solo las fechas con datos (selector de período de todas las pantallas): basta con una sesión válida.
     """Días con datos (para el rango por defecto: último día con datos)."""
     rows = await summary_dates()
     return {"dates": rows, "latest": rows[0]["date"] if rows else None}
@@ -148,9 +191,9 @@ async def list_summary_dates(ctx: AuthContext = Depends(require("news:read"))):
 
 @router.get("/news/stats")
 async def news_stats(date_from: str | None = None, date_to: str | None = None,
-                     ctx: AuthContext = Depends(require("news:read"))):
+                     ctx: AuthContext = Depends(require_any("dashboard:read", "news:read"))):
     f = summary_date_filter(date_from, date_to)
-    return {"date_from": date_from, "date_to": date_to, **await period_stats(f, f)}
+    return {"date_from": date_from, "date_to": date_to, **await cached_period_stats(f, f)}
 
 
 @router.get("/news/topics")

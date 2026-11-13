@@ -107,13 +107,38 @@ async def process_job(job_id: str) -> str:
         return "dead"
     await db["documents"].update_one({"id": document["id"]}, {"$set": {"status": "processing", "updated_at": iso_now()}})
 
+    # Mientras se procesa, la concesión se renueva: un PDF largo (OCR) no se reasigna a otro worker.
+    owner = {"id": job_id, "status": "running", "attempt": job["attempt"]}
+    heartbeat = asyncio.create_task(_renew_lease(owner, s.job_lease_seconds))
+    try:
+        return await _process(job, job_id, document, owner)
+    finally:
+        heartbeat.cancel()
+
+
+async def _renew_lease(owner: dict, lease_seconds: int) -> None:
+    db = get_db()
+    while True:
+        await asyncio.sleep(max(10, lease_seconds // 3))
+        res = await db["processing_jobs"].update_one(
+            owner, {"$set": {"lease_expires_at": utcnow() + timedelta(seconds=lease_seconds)}})
+        if res.matched_count == 0:
+            return  # ya no es nuestro (terminado o reasignado)
+
+
+async def _owns(owner: dict) -> bool:
+    return await get_db()["processing_jobs"].find_one(owner, projection={"_id": 1}) is not None
+
+
+async def _process(job: dict, job_id: str, document: dict, owner: dict) -> str:
+    db = get_db()
     try:
         data = await asyncio.to_thread(read_original, document["storage_key"], document["file_hash"])
         if data is None:
             raise PermanentError("El archivo original ya no está disponible (vencido, movido o modificado en el origen)")
         from app.services.catalogs import media_alias_map
         try:
-            result = extract(data, await media_alias_map() or None)
+            result = await asyncio.to_thread(extract, data, await media_alias_map() or None)
         except OcrUnavailable as e:
             raise PermanentError(str(e)) from e
         if not result.items:
@@ -124,7 +149,7 @@ async def process_job(job_id: str) -> str:
         summary_date_inferred = result.summary_date is None
 
         from app.services.rules import get_effective
-        from app.services.topics import compile_patterns, match_topics
+        from app.services.topics import compile_patterns, match_topics_with_terms
         rule_set, _ = await get_effective()
         topic_patterns = compile_patterns(rule_set)
 
@@ -157,7 +182,9 @@ async def process_job(job_id: str) -> str:
                 news_id = f"news_{uuid.uuid4()}"
                 doc = _news_doc(item, {**document, "summary_date": summary_date}, news_id, to_hex(h), dedupe, now)
                 doc["review_status"], doc["review_reasons"] = apply_sampling(doc["review_status"], doc["review_reasons"], sample_rate)
-                doc["provisional_topics"] = match_topics(item.title, item.body, topic_patterns)
+                matched = match_topics_with_terms(item.title, item.body, topic_patterns)
+                doc["provisional_topics"] = sorted(matched)
+                doc["provisional_topic_terms"] = matched
                 doc["provisional_topics_version"] = (rule_set or {}).get("version")
                 if summary_date_inferred:
                     doc["inferred_fields"] = sorted(set(doc["inferred_fields"]) | {"summary_date"})
@@ -182,6 +209,9 @@ async def process_job(job_id: str) -> str:
 
         warnings = result.warnings + item_errors
         status = "completed_with_warnings" if (warnings or flagged) else "completed"
+        if not await _owns(owner):
+            log.warning("el trabajo %s fue reasignado mientras se procesaba: no se sobrescribe el resultado", job_id)
+            return "skipped"
         await db["documents"].update_one({"id": document["id"]}, {"$set": {
             "status": status,
             "summary_date": summary_date,
@@ -197,7 +227,7 @@ async def process_job(job_id: str) -> str:
             "error_summary": None,
             "updated_at": iso_now(),
         }})
-        await db["processing_jobs"].update_one({"id": job_id}, {"$set": {
+        await db["processing_jobs"].update_one(owner, {"$set": {
             "status": "succeeded", "progress": 100, "finished_at": iso_now(), "lease_expires_at": None, "last_error": None}})
         # El PDF subido no se conserva: su copia temporal en memoria se descarta al terminar.
         release_upload(document["storage_key"], document["file_hash"])
@@ -211,15 +241,19 @@ async def process_job(job_id: str) -> str:
         return "done"
 
     except PermanentError as e:
-        return await _fail(job, document, str(e), permanent=True)
+        return await _fail(job, document, str(e), permanent=True, owner=owner)
     except Exception as e:
         log.exception("fallo procesando %s", document["id"])
-        return await _fail(job, document, f"{type(e).__name__}: {e}", permanent=False)
+        # El detalle técnico queda en el log; al usuario se le muestra un mensaje sin datos internos.
+        return await _fail(job, document, f"Error interno al procesar ({type(e).__name__}); se reintentará.",
+                           permanent=False, owner=owner)
 
 
-async def _fail(job: dict, document: dict, message: str, permanent: bool) -> str:
+async def _fail(job: dict, document: dict, message: str, permanent: bool, owner: dict | None = None) -> str:
     db = get_db()
     attempts = job["attempt"]
+    if owner is not None and not await _owns(owner):
+        return "skipped"  # otro worker ya lo tomó: no se marca como fallido
     dead = permanent or attempts >= job["max_attempts"]
     await db["processing_jobs"].update_one({"id": job["id"]}, {"$set": {
         "status": "dead" if dead else "retry", "last_error": message[:1000], "lease_expires_at": None,

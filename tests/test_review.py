@@ -91,7 +91,8 @@ async def test_double_control_correction(team, reference_doc):
     # una propuesta resuelta no se vuelve a resolver
     assert (await e2.post(f"/api/v1/review/corrections/{review_id}/approve", json={})).status_code == 409
 
-    hist = (await team["consulta"].get(url + "/history")).json()["history"]
+    assert (await team["consulta"].get(url + "/history")).status_code == 403   # requiere review:history_read
+    hist = (await e2.get(url + "/history")).json()["history"]
     assert hist[0]["status"] == "approved" and hist[0]["proposed_by"] == e1.user["id"] and hist[0]["decided_by"] == e2.user["id"]
     assert {c["field"] for c in hist[0]["changes"]} == {"title", "media_name", "publication_date"}
 
@@ -168,7 +169,7 @@ async def test_sampling(team):
 
 
 async def test_review_audit_trail(team):
-    logs = (await team["admin"].get("/api/v1/audit/logs?limit=500")).json()["logs"]
+    logs = (await team["admin"].get("/api/v1/audit/logs?limit=200")).json()["logs"]
     actions = {l["action"] for l in logs}
     assert {"REVIEW_TAKEN", "NEWS_CORRECTION_PROPOSED", "NEWS_CORRECTION_APPROVED", "NEWS_CORRECTION_RETURNED",
             "NEWS_ITEM_APPROVED", "NEWS_ITEM_DISCARDED", "REVIEW_SETTINGS_UPDATED"} <= actions

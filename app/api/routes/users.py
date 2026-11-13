@@ -4,7 +4,7 @@ import secrets
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from app.api.deps import ApiError, AuthContext, require
+from app.api.deps import ApiError, AuthContext, check_claim, require
 from app.core.audit import write_audit
 from app.core.passwords import password_policy_error
 from app.core.rbac import SYSTEM_ROLES
@@ -29,12 +29,12 @@ async def _json(request: Request) -> dict:
 
 
 @router.get("")
-async def list_users(ctx: AuthContext = Depends(require("users:manage"))):
+async def list_users(ctx: AuthContext = Depends(require("users:read"))):
     return {"users": await users.list_users()}
 
 
 @router.post("", status_code=201)
-async def create_user(request: Request, ctx: AuthContext = Depends(require("users:manage"))):
+async def create_user(request: Request, ctx: AuthContext = Depends(require("users:create"))):
     body = await _json(request)
     name, email, roles, password = body.get("name"), body.get("email"), body.get("roles"), body.get("password")
     if not isinstance(name, str) or not name.strip() or len(name) > 120:
@@ -56,7 +56,7 @@ async def create_user(request: Request, ctx: AuthContext = Depends(require("user
 
 
 @router.get("/{user_id}")
-async def get_user(user_id: str, ctx: AuthContext = Depends(require("users:manage"))):
+async def get_user(user_id: str, ctx: AuthContext = Depends(require("users:read"))):
     user = await users.find_by_id(user_id)
     if not user:
         raise ApiError(404, "Usuario no encontrado")
@@ -64,7 +64,7 @@ async def get_user(user_id: str, ctx: AuthContext = Depends(require("users:manag
 
 
 @router.put("/{user_id}")
-async def update_user(user_id: str, request: Request, ctx: AuthContext = Depends(require("users:manage"))):
+async def update_user(user_id: str, request: Request, ctx: AuthContext = Depends(require("users:read"))):
     body = await _json(request)
     name, roles, status = body.get("name"), body.get("roles"), body.get("status")
     if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > 120):
@@ -73,8 +73,21 @@ async def update_user(user_id: str, request: Request, ctx: AuthContext = Depends
         raise ApiError(400, "Roles inválidos")
     if status is not None and status not in STATUSES:
         raise ApiError(400, "Estado inválido")
+    if name is not None:
+        check_claim(ctx, "users:update")
+    if roles is not None:
+        check_claim(ctx, "users:assign_roles")
+    if status is not None:
+        check_claim(ctx, "users:deactivate")
     if user_id == ctx.user["id"] and ((roles is not None and "admin" not in roles) or (status is not None and status != "active")):
         raise ApiError(400, "No puede quitarse el rol admin ni desactivar su propia cuenta")
+    target = await users.find_by_id(user_id)
+    if not target:
+        raise ApiError(404, "Usuario no encontrado")
+    caller_is_admin = "admin" in (ctx.user.get("roles") or [])
+    # Sin escalada: solo quien tiene el rol admin puede dar o quitar el rol admin, o modificar a un administrador.
+    if not caller_is_admin and ("admin" in (target.get("roles") or []) or (roles is not None and "admin" in roles)):
+        raise ApiError(403, "Solo un administrador puede asignar el rol admin o modificar a otro administrador", "FORBIDDEN")
     try:
         before, after = await users.update_user(user_id, name=name, roles=roles, status=status)
     except users.UserError as e:
@@ -97,7 +110,7 @@ def _temp_password() -> str:
 
 
 @router.post("/{user_id}/reset-password")
-async def reset_password(user_id: str, ctx: AuthContext = Depends(require("users:manage"))):
+async def reset_password(user_id: str, ctx: AuthContext = Depends(require("users:reset_password"))):
     """Sin servicio de correo aprobado (D-09): el admin recibe la clave temporal una sola vez (Plan V3.0 §7.3)."""
     user = await users.find_by_id(user_id)
     if not user:

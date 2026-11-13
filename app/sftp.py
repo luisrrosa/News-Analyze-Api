@@ -4,8 +4,8 @@ El sistema nunca escribe, mueve ni borra en el servidor: lista la carpeta, lee c
 y lo vuelve a leer cuando el visor lo necesita. Autenticación por contraseña o por llave privada.
 
 Seguridad: con SFTP_HOST_KEY (huella "SHA256:..." de `ssh-keygen -lf` o la llave pública "ssh-ed25519 AAAA...")
-se verifica la identidad del servidor. Sin ella se acepta la llave del servidor y se registra una advertencia
-(solo aceptable en desarrollo).
+se verifica la identidad del servidor. En producción (APP_ENV=production) es obligatoria: sin ella no se conecta.
+En desarrollo se acepta la llave y se registra una advertencia.
 """
 from __future__ import annotations
 
@@ -50,6 +50,9 @@ class _HostKeyPolicy:
 
     def missing_host_key(self, client, hostname, key):  # interfaz de paramiko.MissingHostKeyPolicy
         if not self.expected:
+            if get_settings().app_env == "production":
+                # En producción no se habla con un servidor no verificado (robo de la contraseña, PDF falsos).
+                raise RuntimeError(f"SFTP_HOST_KEY es obligatorio en producción; huella de {hostname}: {_fingerprint(key)}")
             log.warning("SFTP_HOST_KEY no definido: se acepta la llave de %s (%s)", hostname, _fingerprint(key))
             return
         if self.expected.startswith("SHA256:"):
