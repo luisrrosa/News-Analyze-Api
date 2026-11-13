@@ -9,6 +9,8 @@
 #
 #   docker compose up --build
 #
+# Puertos publicados configurables: WEB_PORT (3000). La api y redis no se publican fuera de la red interna.
+#
 x-api-common: &api-common
   build: .
   env_file: .env
@@ -54,14 +56,12 @@ services:
       context: ../newsAnalyze
       args:
         API_INTERNAL_URL: http://api:8000
-    env_file: ../newsAnalyze/.env.local
-    environment:
-      API_INTERNAL_URL: http://api:8000
-      MONGODB_DNS_SERVERS: ""
+    # Sin env_file: la interfaz no necesita secretos (MongoDB, JWT y auditoría viven solo en la api).
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3000}:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
   redis:

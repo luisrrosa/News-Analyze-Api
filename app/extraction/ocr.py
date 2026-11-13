@@ -3,15 +3,14 @@
 La extracción normal es digital (PyMuPDF). Solo una página con muy poco texto y con imágenes se considera
 escaneada y pasa por OCR; las noticias que salen de ahí se marcan `ocr_text` y van a revisión humana.
 
-Motor configurable con OCR_ENGINE: `tesseract` (requiere el binario y el idioma `spa`, incluidos en la imagen
-Docker) o `none`. Si no hay motor, la página no se inventa: se avisa y, si el documento queda sin noticias,
+Motor configurable con OCR_ENGINE: `tesseract` o `none`. MuPDF incluye el motor; solo hacen falta los modelos
+de idioma (`spa.traineddata`) en TESSDATA_PREFIX o en la instalación de Tesseract (la imagen Docker los trae). Si no hay motor, la página no se inventa: se avisa y, si el documento queda sin noticias,
 el procesamiento falla con un mensaje explícito.
 """
 from __future__ import annotations
 
 import logging
 import os
-import shutil
 from functools import lru_cache
 
 import pymupdf
@@ -27,20 +26,36 @@ class OcrUnavailable(RuntimeError):
     pass
 
 
-def _engine() -> str:
-    return os.environ.get("OCR_ENGINE", "tesseract").strip().lower()
-
-
-@lru_cache(maxsize=1)
-def _tessdata() -> str | None:
-    """Ruta de tessdata con el idioma español, o None si Tesseract no está instalado."""
-    if not shutil.which("tesseract"):
-        return None
+def _settings():
+    from app.core.config import get_settings
     try:
-        path = pymupdf.get_tessdata()
-    except Exception:
+        return get_settings()
+    except Exception:  # sin configuración completa (p. ej. herramientas sueltas): solo variables de entorno
         return None
-    return path if path and os.path.exists(os.path.join(path, f"{OCR_LANGUAGE}.traineddata")) else None
+
+
+def _engine() -> str:
+    s = _settings()
+    return (os.environ.get("OCR_ENGINE") or (s.ocr_engine if s else "tesseract")).strip().lower()
+
+
+@lru_cache(maxsize=4)
+def _find_tessdata(explicit: str) -> str | None:
+    candidates = [explicit] if explicit else []
+    try:
+        candidates.append(pymupdf.get_tessdata())
+    except Exception:
+        pass
+    for path in candidates:
+        if path and os.path.exists(os.path.join(path, f"{OCR_LANGUAGE}.traineddata")):
+            return path
+    return None
+
+
+def _tessdata() -> str | None:
+    """Carpeta tessdata con el idioma español, o None si no hay modelos instalados."""
+    s = _settings()
+    return _find_tessdata((s.tessdata_prefix if s else "") or os.environ.get("TESSDATA_PREFIX", ""))
 
 
 def ocr_available() -> bool:
@@ -50,9 +65,7 @@ def ocr_available() -> bool:
 def unavailable_reason() -> str:
     if _engine() != "tesseract":
         return f"OCR desactivado (OCR_ENGINE={_engine() or 'vacío'})"
-    if not shutil.which("tesseract"):
-        return "Tesseract no está instalado en el servidor"
-    return f"Tesseract no tiene el idioma '{OCR_LANGUAGE}' instalado"
+    return f"no se encontró el modelo de idioma '{OCR_LANGUAGE}' de Tesseract (configure TESSDATA_PREFIX)"
 
 
 def is_scanned(page: pymupdf.Page) -> bool:

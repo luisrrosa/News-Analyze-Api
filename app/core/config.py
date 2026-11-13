@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     ingest_poll_seconds: int = Field(default=60, ge=5)
     ingest_stable_seconds: int = Field(default=30, ge=1)
 
+    # OCR de excepción para páginas escaneadas: tesseract | none. MuPDF trae el motor; solo necesita los
+    # modelos de idioma (tessdata con spa.traineddata). Vacío = TESSDATA_PREFIX o la instalación de Tesseract.
+    ocr_engine: str = "tesseract"
+    tessdata_prefix: str = ""
+
     @property
     def broker_url(self) -> str:
         return self.celery_broker_url or self.redis_url or "memory://"
