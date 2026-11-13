@@ -118,6 +118,11 @@ async def process_job(job_id: str) -> str:
         summary_date = result.summary_date or str(document["uploaded_at"])[:10]
         summary_date_inferred = result.summary_date is None
 
+        from app.services.rules import get_effective
+        from app.services.topics import compile_patterns, match_topics
+        rule_set, _ = await get_effective()
+        topic_patterns = compile_patterns(rule_set)
+
         recent = await _recent_hashes(document["id"])
         seen: list[tuple[str, int]] = []
         operations, duplicates, item_errors, flagged = [], 0, [], 0
@@ -143,6 +148,8 @@ async def process_job(job_id: str) -> str:
                 }
                 news_id = f"news_{uuid.uuid4()}"
                 doc = _news_doc(item, {**document, "summary_date": summary_date}, news_id, to_hex(h), dedupe, now)
+                doc["provisional_topics"] = match_topics(item.title, item.body, topic_patterns)
+                doc["provisional_topics_version"] = (rule_set or {}).get("version")
                 if summary_date_inferred:
                     doc["inferred_fields"] = sorted(set(doc["inferred_fields"]) | {"summary_date"})
                 if doc["publication_date"] is None:

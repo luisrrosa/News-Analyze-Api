@@ -64,10 +64,10 @@ async def test_reference_document_processed(roles, reference_doc):
     assert r.status_code == 200
     doc = r.json()["document"]
     assert doc["status"] == "completed"
-    assert doc["total_items"] == 156 and doc["page_count"] == 39
+    assert doc["items_total"] == 156 and doc["page_count"] == 39
     assert doc["summary_date"] == "2026-10-05" and doc["footer_document_number"] == "227"
     assert doc["items_by_type"] == {"Noticia": 118, "Artículo": 33, "Editorial": 5}
-    assert doc["multi_page_items_count"] == 32
+    assert doc["multi_page_items"] == 32
     assert "storage_key" not in doc
     assert r.json()["job"]["status"] == "succeeded"
 
@@ -77,10 +77,11 @@ async def test_news_listing_and_compat_fields(roles, reference_doc):
     body = r.json()
     assert body["total"] == 156
     first = min(body["items"], key=lambda n: n["news_index"])
-    assert first["medio"] == "Diario Libre" and first["destaque"] == "Medio" and first["autor"] == "Adalberto de la Rosa"
+    assert first["media_name"] == "Diario Libre" and first["source_destaque"] == "Medio" and first["author_raw"] == "Adalberto de la Rosa"
+    assert first["source_page_label"] == "Pág. 4" and "medio" not in first and "body_text" not in first
     assert first["title"].startswith("LAS ALCALDÍAS") and first["publication_date"] == "2026-10-05"
-    assert first["triage"]["alert_level"] == "SIN_EVALUAR"
-    r = await roles["consulta"].get("/api/v1/news?medio=El Día&limit=200")
+    assert first["triage_status"] == "not_evaluated"
+    r = await roles["consulta"].get("/api/v1/news?media=El Día&limit=200")
     assert r.json()["total"] >= 21
 
 
@@ -215,3 +216,64 @@ async def test_presidential_report_pdf(roles, reference_doc):
     doc.close()
     r = await roles["admin"].get("/api/v1/audit/logs?limit=50")
     assert any(l["action"] == "REPORT_EXPORTED" for l in r.json()["logs"])
+
+
+async def test_explorer_filters_sort_and_facets(roles, reference_doc):
+    c = roles["consulta"]
+    base = "/api/v1/news?date_from=2026-10-05&date_to=2026-10-05&document_id=" + reference_doc
+    assert (await c.get(base + "&section=Opinión&limit=1")).json()["total"] == 38
+    assert (await c.get(base + "&content_type=Editorial&limit=1")).json()["total"] == 5
+    assert (await c.get(base + "&destaque=Muy Alto&limit=1")).json()["total"] == 7
+    assert (await c.get(base + "&has_url=false&limit=1")).json()["total"] == 38
+    assert (await c.get(base + "&multi_page=true&limit=1")).json()["total"] == 32
+    assert (await c.get(base + "&related=true&limit=1")).json()["total"] >= 1
+    r = (await c.get(base + "&sort=destaque&limit=10")).json()
+    assert [n["source_destaque"] for n in r["items"][:7]] == ["Muy Alto"] * 7
+    with_topic = (await c.get(base + "&topic=T03&limit=1")).json()["total"]
+    without = (await c.get(base + "&topic=none&limit=1")).json()["total"]
+    assert with_topic > 0 and without > 0
+    f = (await c.get("/api/v1/news/facets?date_from=2026-10-05&date_to=2026-10-05")).json()
+    assert {"Nacionales", "Opinión", "Económicas", "Deportes", "Sociales"} <= set(f["section"])
+    stats = (await c.get("/api/v1/news/stats?date_from=2026-10-05&date_to=2026-10-05")).json()
+    assert stats["by_day"][0]["date"] == "2026-10-05" and stats["by_day"][0]["total"] >= 156
+    assert stats["by_topic"] and stats["by_topic"][0]["count"] > 0
+
+
+async def test_news_detail_and_links(roles, reference_doc):
+    col = get_db()["news"]
+    b = await col.find_one({"document_id": reference_doc, "news_index": 147})
+    a = await col.find_one({"document_id": reference_doc, "news_index": 102})
+    r = await roles["consulta"].get(f"/api/v1/news/{b['id']}")
+    body = r.json()
+    assert body["document"]["id"] == reference_doc and body["document"]["page_count"] == 39
+    assert any(l["id"] == a["id"] and l["relation"] == "related" for l in body["links"])
+    r = await roles["consulta"].get(f"/api/v1/news/{a['id']}")
+    assert any(l["id"] == b["id"] for l in r.json()["links"])  # el vínculo se ve desde ambos lados
+    assert (await roles["consulta"].get("/api/v1/news/no-existe")).status_code == 404
+
+
+async def test_csv_export(roles, reference_doc):
+    assert (await roles["consulta"].get("/api/v1/news/export.csv")).status_code == 403
+    r = await roles["editor"].get(f"/api/v1/news/export.csv?document_id={reference_doc}&content_type=Editorial")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    text = r.content.decode("utf-8")
+    assert text.startswith("﻿") and "Fecha del resumen;Fecha de publicación" in text
+    assert len([l for l in text.splitlines() if l.startswith("2026-10-05")]) >= 5
+
+
+async def test_media_and_topic_reports(roles, reference_doc):
+    r = await roles["editor"].get("/api/v1/reports/media?media=Hoy&date_from=2026-10-05&date_to=2026-10-05")
+    assert r.status_code == 200
+    text = "".join(p.get_text() for p in pymupdf.open(stream=r.content, filetype="pdf"))
+    assert "Reporte de Prensa por Medio" in text and "Medio: Hoy" in text
+    r = await roles["editor"].get("/api/v1/reports/topic?topic=T03&date_from=2026-10-05&date_to=2026-10-05")
+    assert r.status_code == 200
+    assert "Reporte de Prensa por Tema" in "".join(p.get_text() for p in pymupdf.open(stream=r.content, filetype="pdf"))
+    assert (await roles["editor"].get("/api/v1/reports/topic?topic=ZZZ")).status_code == 404
+
+
+async def test_page_image_highlight(roles, reference_doc):
+    n = await get_db()["news"].find_one({"document_id": reference_doc, "news_index": 4})
+    plain = await roles["consulta"].get(f"/api/v1/documents/{reference_doc}/pages/2/image")
+    marked = await roles["consulta"].get(f"/api/v1/documents/{reference_doc}/pages/2/image?news_id={n['id']}")
+    assert plain.status_code == marked.status_code == 200 and plain.content != marked.content

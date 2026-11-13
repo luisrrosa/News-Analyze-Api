@@ -2,7 +2,19 @@ from fastapi import APIRouter, Depends, Request
 
 from app.api.deps import ApiError, AuthContext, require
 from app.core.audit import write_audit
+import asyncio
+
 from app.services import rules
+from app.services.topics import recompute_news_topics
+
+_background: set = set()
+
+
+def _recompute_later() -> None:
+    """Recalcula los temas de las noticias en segundo plano (no bloquea la respuesta)."""
+    task = asyncio.create_task(recompute_news_topics())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
 
 router = APIRouter(prefix="/rules", tags=["rules"])
 
@@ -76,6 +88,7 @@ async def add_topic(request: Request, ctx: AuthContext = Depends(require("topics
         raise _err(e)
     await write_audit(**ctx.actor(), action="TOPIC_CREATED", entity_type="RULE_SET", entity_id=draft["version"],
                       status="SUCCESS", details={"topic": draft["topics"][-1]})
+    _recompute_later()
     return {"draft": draft}
 
 
@@ -90,6 +103,7 @@ async def edit_topic(code: str, request: Request, ctx: AuthContext = Depends(req
     after = next((t for t in draft["topics"] if t["code"] == code), None)
     await write_audit(**ctx.actor(), action="TOPIC_UPDATED", entity_type="RULE_SET", entity_id=draft["version"],
                       status="SUCCESS", details={"code": code, "before": before, "after": after})
+    _recompute_later()
     return {"draft": draft}
 
 
@@ -115,4 +129,5 @@ async def approve(ctx: AuthContext = Depends(require("topics:manage", "triage:ca
     await write_audit(**ctx.actor(), action="RULESET_APPROVED", entity_type="RULE_SET", entity_id=approved["version"],
                       status="SUCCESS", details={"replaces": previous,
                                                  "changes": rules.diff_versions(prev_doc, approved) if prev_doc else None})
+    _recompute_later()
     return {"approved": approved, "replaces": previous}

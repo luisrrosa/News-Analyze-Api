@@ -19,6 +19,38 @@ def _norm(text: str) -> str:
     return " " + re.sub(r"[^a-z0-9ñ]+", " ", t).strip() + " "
 
 
+def compile_patterns(rule_set: dict | None) -> list[tuple[dict, list[str]]]:
+    topics = [t for t in (rule_set or {}).get("topics", []) if t.get("active")]
+    return [(t, [_norm(s) for s in t.get("synonyms", []) if s.strip()]) for t in topics]
+
+
+def match_topics(title: str, body: str, patterns: list[tuple[dict, list[str]]]) -> list[str]:
+    text = _norm(f"{title or ''} {body or ''}")
+    return [t["code"] for t, pats in patterns if any(p in text for p in pats)]
+
+
+async def recompute_news_topics(batch: int = 500) -> int:
+    """Recalcula news.provisional_topics con la versión efectiva del catálogo (tras editar o aprobar reglas)."""
+    rule_set, _ = await get_effective()
+    patterns = compile_patterns(rule_set)
+    version = (rule_set or {}).get("version")
+    col = get_db()["news"]
+    ops, n = [], 0
+    from pymongo import UpdateOne
+    async for d in col.find({}, projection={"id": 1, "title": 1, "body": 1}):
+        ops.append(UpdateOne({"id": d["id"]}, {"$set": {
+            "provisional_topics": match_topics(d.get("title", ""), d.get("body", ""), patterns),
+            "provisional_topics_version": version}}))
+        if len(ops) >= batch:
+            await col.bulk_write(ops, ordered=False)
+            n += len(ops)
+            ops = []
+    if ops:
+        await col.bulk_write(ops, ordered=False)
+        n += len(ops)
+    return n
+
+
 async def topic_breakdown(news_match: dict) -> dict:
     rule_set, approved = await get_effective()
     topics = [t for t in (rule_set or {}).get("topics", []) if t.get("active")]

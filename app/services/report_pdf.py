@@ -100,17 +100,21 @@ async def _shared(match: dict) -> list[tuple[dict, list[dict]]]:
     return groups
 
 
-async def build_presidential_report(date_from: str, date_to: str, generated_by: str) -> bytes:
-    match = {"summary_date": {"$gte": date_from, "$lte": date_to}}
-    stats = await period_stats(match, match)
+async def build_presidential_report(date_from: str, date_to: str, generated_by: str,
+                                   extra_match: dict | None = None, title: str = "Reporte Presidencial de Prensa",
+                                   scope: str | None = None) -> bytes:
+    """Reporte formal del período. extra_match/title/scope permiten los reportes por medio y por tema."""
+    match = {"summary_date": {"$gte": date_from, "$lte": date_to}, **(extra_match or {})}
+    doc_match = {"summary_date": match["summary_date"]}
+    stats = await period_stats(match, doc_match)
     headlines, headlines_total = await _headlines(match)
     shared = await _shared(match)
     total = stats["total_news"]
     now = datetime.now(timezone.utc)
 
     parts = [f"""
-<h1>Reporte Presidencial de Prensa</h1>
-<p><b>Período:</b> {_e(_period(date_from, date_to))}</p>
+<h1>{_e(title)}</h1>
+<p><b>Período:</b> {_e(_period(date_from, date_to))}</p>{("<p><b>Alcance:</b> " + _e(scope) + "</p>") if scope else ""}
 <p class='muted'>Generado el {_e(_long_date(now.date().isoformat()))} a las {now.strftime('%H:%M')} UTC por {_e(generated_by)} ·
 Fuente: {stats['documents']} resumen(es) de prensa procesado(s){(' (' + ', '.join(_long_date(d) for d in stats['days'][:6]) + ('…' if len(stats['days']) > 6 else '') + ')') if stats['days'] else ''}.</p>
 <p class='note'>Este reporte presenta información extraída de forma determinista de los resúmenes de prensa. El «destaque» es el
@@ -203,8 +207,8 @@ de simulación y no forman parte de este documento. Uso exclusivamente instituci
         w, h = page.rect.width, page.rect.height
         if LOGO.exists():
             page.insert_image(pymupdf.Rect(50, 26, 210, 61), filename=str(LOGO), keep_proportion=True)
-        page.insert_text((w - 50 - pymupdf.get_text_length("REPORTE PRESIDENCIAL DE PRENSA", "hebo", 9), 40),
-                         "REPORTE PRESIDENCIAL DE PRENSA", fontname="hebo", fontsize=9, color=NAVY)
+        page.insert_text((w - 50 - pymupdf.get_text_length(title.upper(), "hebo", 9), 40),
+                         title.upper(), fontname="hebo", fontsize=9, color=NAVY)
         page.insert_text((w - 50 - pymupdf.get_text_length(period_text, "helv", 8), 53), period_text,
                          fontname="helv", fontsize=8, color=(0.39, 0.45, 0.55))
         page.draw_line((50, 70), (w - 50, 70), color=NAVY, width=1.2)
@@ -214,7 +218,7 @@ de simulación y no forman parte de este documento. Uso exclusivamente instituci
         num = f"Página {i} de {total_pages}"
         page.insert_text((w - 50 - pymupdf.get_text_length(num, "helv", 7.5), h - 30), num,
                          fontname="helv", fontsize=7.5, color=(0.39, 0.45, 0.55))
-    doc.set_metadata({"title": f"Reporte Presidencial de Prensa — {period_text}", "author": "NEWS ANALYZE",
+    doc.set_metadata({"title": f"{title} — {period_text}", "author": "NEWS ANALYZE",
                       "creator": "NEWS ANALYZE", "subject": "Reporte institucional de prensa"})
     out = doc.tobytes(garbage=3, deflate=True)
     doc.close()

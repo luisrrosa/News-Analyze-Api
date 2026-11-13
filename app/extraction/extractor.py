@@ -377,3 +377,29 @@ def extract(pdf_bytes: bytes, media_aliases: dict[str, str] | None = None) -> Ex
         )
     finally:
         doc.close()
+
+
+def item_band(page: pymupdf.Page, starts_here_order: int | None, continues_from_previous: bool,
+              continues_to_next: bool) -> pymupdf.Rect | None:
+    """Zona vertical que ocupa una noticia en la página (para resaltarla en el visor).
+
+    starts_here_order: posición (0, 1, …) de la noticia entre las que COMIENZAN en esta página;
+    None si la noticia solo continúa aquí desde la página anterior.
+    """
+    height, width = page.rect.height, page.rect.width
+    headers = [l.y for l in _page_lines(page, 0)
+               if TOP_BAND <= l.y / height <= BOTTOM_BAND and not l.bold_all and l.size < 11
+               and HEADER_RE.match(_collapse(l.text))]
+    top_limit, bottom_limit = height * TOP_BAND, height * BOTTOM_BAND
+    if starts_here_order is None:
+        if not continues_from_previous:
+            return None
+        start = top_limit
+        end = headers[0] if headers else bottom_limit
+    else:
+        if starts_here_order >= len(headers):
+            return None
+        start = headers[starts_here_order]
+        nxt = headers[starts_here_order + 1] if starts_here_order + 1 < len(headers) else None
+        end = nxt if nxt is not None else bottom_limit
+    return pymupdf.Rect(28, max(start - 4, top_limit), width - 28, min(end - 2, bottom_limit))

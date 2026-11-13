@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -21,7 +22,14 @@ async def lifespan(_: FastAPI):
     get_settings()  # falla al arrancar si falta configuración obligatoria
     database = await db.connect()
     await run_bootstrap(database)
+    # Noticias anteriores a la Fase 5 sin temas provisionales guardados: se calculan en segundo plano.
+    pending = None
+    if await database["news"].find_one({"provisional_topics_version": {"$exists": False}}, projection={"_id": 1}):
+        from app.services.topics import recompute_news_topics
+        pending = asyncio.create_task(recompute_news_topics())
     yield
+    if pending and not pending.done():
+        pending.cancel()
     await db.close()
 
 

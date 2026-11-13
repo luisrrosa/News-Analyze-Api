@@ -77,9 +77,9 @@ async def upload(request: Request, file: UploadFile = File(...), ctx: AuthContex
     out = document_out(fresh, *await _stats(doc["id"]))
     return {
         "success": True,
-        "message": f"Documento {out['filename']} recibido. Estado: {out['status']}.",
+        "message": f"Documento {out['file_name']} recibido. Estado: {out['status']}.",
         "summary": out,
-        "items_extracted": out["total_items"],
+        "items_extracted": out.get("items_total", 0),
     }
 
 
@@ -128,24 +128,47 @@ async def page_items(document_id: str, page: int = Path(ge=1, le=1000), ctx: Aut
         raise ApiError(400, "Número de página inválido")
     items = [news_out(n) async for n in get_db()["news"].find({"document_id": document_id, "pdf_page_indices": page}).sort("news_index", 1)]
     for i in items:
-        i["continues_from_prev_page"] = i["pdf_pages"][0] < page
-        i["continues_to_next_page"] = i["pdf_pages"][-1] > page
+        i["continues_from_prev_page"] = i["pdf_page_indices"][0] < page
+        i["continues_to_next_page"] = i["pdf_page_indices"][-1] > page
     return {"page": page, "page_count": doc["page_count"], "document_id": document_id, "items_in_page": items,
             "watermark": "USO EXCLUSIVO INSTITUCIONAL"}
 
 
 @router.get("/{document_id}/pages/{page}/image")
-async def page_image(document_id: str, page: int = Path(ge=1, le=1000), ctx: AuthContext = Depends(require("documents:read"))):
-    """Visor sin descarga (decisión D-02): la página se entrega como imagen WebP con marca de agua del usuario."""
+async def page_image(document_id: str, page: int = Path(ge=1, le=1000), news_id: str | None = None,
+                     ctx: AuthContext = Depends(require("documents:read"))):
+    """Visor sin descarga (decisión D-02): la página se entrega como imagen WebP con marca de agua del usuario.
+    Con news_id, se resalta la zona de la página que ocupa esa noticia."""
     doc = await _get_document(document_id)
     if page > (doc.get("page_count") or 0):
         raise ApiError(400, "Número de página inválido")
     data = get_storage().get(doc["storage_key"])
     if data is None:
         raise ApiError(404, "El archivo original no está disponible")
+
+    highlight = None
+    if news_id:
+        target = await get_db()["news"].find_one({"id": news_id, "document_id": document_id},
+                                                 projection={"news_index": 1, "pdf_page_indices": 1})
+        if target and page in target.get("pdf_page_indices", []):
+            pages = target["pdf_page_indices"]
+            if pages[0] == page:
+                # Posición entre las noticias que comienzan en esta página
+                order = await get_db()["news"].count_documents({
+                    "document_id": document_id, "pdf_page_indices.0": page, "news_index": {"$lt": target["news_index"]}})
+                highlight = (order, False, pages[-1] > page)
+            else:
+                highlight = (None, True, pages[-1] > page)
+
     pdf = pymupdf.open(stream=data, filetype="pdf")
     try:
-        pix = pdf[page - 1].get_pixmap(dpi=110)
+        pg = pdf[page - 1]
+        if highlight:
+            from app.extraction.extractor import item_band
+            band = item_band(pg, *highlight)
+            if band:
+                pg.draw_rect(band, color=(0.85, 0.55, 0.0), fill=(1.0, 0.85, 0.2), fill_opacity=0.18, width=1.6)
+        pix = pg.get_pixmap(dpi=110)
         img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     finally:
         pdf.close()

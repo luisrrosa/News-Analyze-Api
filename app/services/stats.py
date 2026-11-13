@@ -33,7 +33,38 @@ async def period_stats(news_match: dict, doc_match: dict) -> dict:
             dates.add(d["summary_date"])
 
     by_destaque = await _group(news_match, "source_destaque")
+
+    # Evolución diaria (fecha del resumen) con desglose por medio
+    by_day: dict[str, dict] = {}
+    async for row in await db["news"].aggregate([
+        {"$match": news_match},
+        {"$group": {"_id": {"d": "$summary_date", "m": "$media_name"}, "n": {"$sum": 1}}},
+    ]):
+        day = row["_id"]["d"]
+        if not day:
+            continue
+        entry = by_day.setdefault(day, {"date": day, "total": 0, "by_media": {}})
+        entry["total"] += row["n"]
+        entry["by_media"][row["_id"]["m"] or "Sin resolver"] = row["n"]
+
+    # Temas provisionales (guardados en cada noticia)
+    from app.services.rules import get_effective
+    rule_set, approved = await get_effective()
+    names = {t["code"]: t["name"] for t in (rule_set or {}).get("topics", [])}
+    by_topic = []
+    async for row in await db["news"].aggregate([
+        {"$match": {**news_match, "is_duplicate": False}}, {"$unwind": "$provisional_topics"},
+        {"$group": {"_id": "$provisional_topics", "n": {"$sum": 1}}}, {"$sort": {"n": -1}},
+    ]):
+        by_topic.append({"code": row["_id"], "name": names.get(row["_id"], row["_id"]), "count": row["n"]})
+    without_topic = await db["news"].count_documents({**news_match, "is_duplicate": False, "provisional_topics": {"$size": 0}})
+
     return {
+        "by_day": [by_day[k] for k in sorted(by_day)],
+        "by_topic": by_topic,
+        "without_topic": without_topic,
+        "topics_rule_set": (rule_set or {}).get("version"),
+        "topics_rule_set_approved": approved,
         "total_news": total,
         "documents": documents,
         "pages": pages,
