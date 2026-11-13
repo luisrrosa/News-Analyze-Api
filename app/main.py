@@ -52,6 +52,16 @@ def create_app() -> FastAPI:
     from app.core.body_limit import BodyLimitMiddleware
     app.add_middleware(BodyLimitMiddleware)
 
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        # Cabeceras defensivas también en la API (OWASP ZAP 10021 / 90004), aunque solo la llame la web.
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        return response
+
     @app.exception_handler(ApiError)
     async def api_error_handler(_: Request, exc: ApiError):
         content = {"error": exc.error}
