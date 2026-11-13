@@ -78,9 +78,12 @@ async def _active_user_for_session(sid: str, user_id: str) -> dict | None:
     if not user or user.get("status") != "active" or not await sessions.is_session_active(sid, user_id):
         _AUTH_CACHE.pop(sid, None)
         return None
-    if len(_AUTH_CACHE) > 5000:
-        _AUTH_CACHE.clear()
-    _AUTH_CACHE[sid] = (now, user)
+    # Un usuario con cambio de clave pendiente no se guarda: al cambiarla, el desbloqueo debe verse en todos los
+    # procesos de inmediato (no a los 5 s).
+    if not user.get("must_change_password"):
+        if len(_AUTH_CACHE) > 5000:
+            _AUTH_CACHE.clear()
+        _AUTH_CACHE[sid] = (now, user)
     return user
 
 
