@@ -3,6 +3,7 @@
 validar → SHA-256 → rechazar duplicado → guardar original → documents + processing_jobs + outbox_events
 (en una transacción cuando el servidor la admite) → publicar el trabajo en la cola.
 """
+import asyncio
 import hashlib
 import logging
 import re
@@ -15,7 +16,7 @@ from pymongo.errors import DuplicateKeyError, OperationFailure
 from app.core.config import get_settings
 from app.core.db import get_db, iso_now
 from app.extraction.extractor import EXTRACTOR_VERSION
-from app.storage import get_storage
+from app.storage import keep_upload
 
 log = logging.getLogger("documents")
 
@@ -40,6 +41,9 @@ class Actor:
     request_id: str | None = None
 
 
+MAX_PAGE_POINTS = 3400  # A0 = 2384 × 3370 pt
+
+
 def validate_pdf(data: bytes) -> int:
     """Valida por contenido (firma y estructura), no por extensión. Devuelve el número de páginas."""
     s = get_settings()
@@ -60,6 +64,10 @@ def validate_pdf(data: bytes) -> int:
             raise DocumentRejected(400, "El PDF no tiene páginas.", "PDF_EMPTY")
         if doc.page_count > s.documents_max_pages:
             raise DocumentRejected(413, f"El PDF supera el límite de {s.documents_max_pages} páginas.", "TOO_MANY_PAGES")
+        # Páginas desproporcionadas (más grandes que un A0) agotarían la memoria al dibujarlas en el visor.
+        for page in doc:
+            if page.rect.width > MAX_PAGE_POINTS or page.rect.height > MAX_PAGE_POINTS:
+                raise DocumentRejected(400, "El PDF tiene páginas de tamaño no válido (mayores que A0).", "PAGE_TOO_LARGE")
         return doc.page_count
     finally:
         doc.close()
@@ -93,18 +101,22 @@ async def _insert_all(document: dict, job: dict, event: dict) -> None:
     await db["outbox_events"].insert_one(event)
 
 
-async def receive_document(data: bytes, filename: str, actor: Actor, source: str) -> dict:
-    page_count = validate_pdf(data)
+async def receive_document(data: bytes, filename: str, actor: Actor, source: str, storage_key: str | None = None) -> dict:
+    """storage_key: dónde está el original si no se recibió por la API (p. ej. sftp:<ruta>); si no, se guarda
+    según STORAGE_BACKEND (disco en desarrollo, memoria temporal en AKS)."""
+    page_count = await asyncio.to_thread(validate_pdf, data)  # CPU: fuera del event loop
     sha = hashlib.sha256(data).hexdigest()
     db = get_db()
 
-    existing = await db["documents"].find_one({"file_hash": sha}, projection={"id": 1, "status": 1})
-    if existing:
+    existing = await db["documents"].find_one({"file_hash": sha}, projection={"id": 1, "status": 1, "error_summary": 1})
+    # Un documento que falló (p. ej. el original venció en memoria) se reabre con el mismo id al volver a subirlo.
+    reopen = existing if existing and existing.get("status") == "failed" else None
+    if existing and not reopen:
         raise DocumentRejected(409, "Este PDF ya fue cargado anteriormente.", "DUPLICATE_DOCUMENT", existing["id"])
 
-    storage_key = get_storage().put(sha, data)
+    storage_key = storage_key or keep_upload(sha, data)
     now = iso_now()
-    document_id = f"doc_{uuid.uuid4()}"
+    document_id = reopen["id"] if reopen else f"doc_{uuid.uuid4()}"
     job_id = f"job_{uuid.uuid4()}"
     attempt_id = str(uuid.uuid4())
 
@@ -159,7 +171,14 @@ async def receive_document(data: bytes, filename: str, actor: Actor, source: str
         "published_at": None,
     }
     try:
-        await _insert_all(document, job, event)
+        if reopen:
+            document["reopened_at"] = now
+            document["previous_error"] = reopen.get("error_summary")
+            await db["documents"].replace_one({"id": reopen["id"], "status": "failed"}, document)
+            await db["processing_jobs"].insert_one(job)
+            await db["outbox_events"].insert_one(event)
+        else:
+            await _insert_all(document, job, event)
     except DuplicateKeyError:
         existing = await db["documents"].find_one({"file_hash": sha}, projection={"id": 1})
         raise DocumentRejected(409, "Este PDF ya fue cargado anteriormente.", "DUPLICATE_DOCUMENT",

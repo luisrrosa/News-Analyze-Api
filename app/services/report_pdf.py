@@ -84,12 +84,15 @@ async def _shared(match: dict) -> list[tuple[dict, list[dict]]]:
     seen: set[str] = set()
     proj = {"id": 1, "title": 1, "media_name": 1, "summary_date": 1, "related_news_ids": 1, "canonical_news_id": 1,
             "is_duplicate": 1, "duplicate_similarity": 1}
-    async for n in col.find({**match, "$or": [{"related_news_ids.0": {"$exists": True}}, {"is_duplicate": True}]},
-                            projection=proj).limit(MAX_SHARED * 3):
+    candidates = [n async for n in col.find({**match, "$or": [{"related_news_ids.0": {"$exists": True}}, {"is_duplicate": True}]},
+                                            projection=proj).limit(MAX_SHARED * 3)]
+    wanted = {i for n in candidates for i in (n.get("related_news_ids") or ([n["canonical_news_id"]] if n.get("canonical_news_id") else []))}
+    by_id = {o["id"]: o async for o in col.find({"id": {"$in": list(wanted)}}, projection=proj)} if wanted else {}
+    for n in candidates:
         if n["id"] in seen:
             continue
         other_ids = n.get("related_news_ids") or ([n["canonical_news_id"]] if n.get("canonical_news_id") else [])
-        others = [o async for o in col.find({"id": {"$in": other_ids}}, projection=proj)]
+        others = [by_id[i] for i in other_ids if i in by_id]
         if not others:
             continue
         seen.add(n["id"])
@@ -186,7 +189,12 @@ de simulación y no forman parte de este documento. Uso exclusivamente instituci
         else:
             parts.append("<p>No se detectó cobertura compartida en el período.</p>")
 
-    story = pymupdf.Story(html="".join(parts), user_css=CSS)
+    import asyncio
+    return await asyncio.to_thread(_render_pdf, "".join(parts), title, date_from, date_to)
+
+
+def _render_pdf(html: str, title: str, date_from, date_to) -> bytes:
+    story = pymupdf.Story(html=html, user_css=CSS)
     buf = io.BytesIO()
     writer = pymupdf.DocumentWriter(buf)
     page_rect = pymupdf.paper_rect("letter")

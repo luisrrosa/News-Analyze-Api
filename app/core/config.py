@@ -1,3 +1,4 @@
+import re
 from functools import lru_cache
 
 from pydantic import Field, field_validator, model_validator
@@ -9,7 +10,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_env: str = "development"
+    # Por defecto producción: en desarrollo hay que declararlo (APP_ENV=development) para ver /api/docs.
+    app_env: str = "production"
 
     mongodb_uri: str
     mongodb_db_name: str = "news_analize"
@@ -38,7 +40,9 @@ class Settings(BaseSettings):
     login_rate_window_seconds: int = 300
 
     # Documentos (Plan V3.0 §13 y §17)
-    storage_backend: str = "local"            # local | azure (pendiente de cuenta)
+    # local: disco (desarrollo/compose). memory: el PDF subido solo vive en Redis mientras se procesa (AKS).
+    storage_backend: str = "local"
+    upload_ttl_seconds: int = Field(default=3600, ge=300, le=86400)
     storage_root: str = "./storage"
     documents_max_size_mb: int = Field(default=50, ge=1, le=200)
     documents_max_pages: int = Field(default=200, ge=1, le=1000)
@@ -60,9 +64,27 @@ class Settings(BaseSettings):
     ocr_engine: str = "tesseract"
     tessdata_prefix: str = ""
 
+    # File server de resúmenes por SFTP (solo lectura; los originales no se mueven). Vacío = desactivado.
+    sftp_host: str = ""
+    sftp_port: int = Field(default=22, ge=1, le=65535)
+    sftp_user: str = ""
+    sftp_password: str = ""
+    sftp_private_key: str = ""          # PEM; los saltos de línea pueden venir escritos como "\n"
+    sftp_host_key: str = ""             # huella SHA256:... o llave pública del servidor
+    sftp_path: str = "/"
+    sftp_poll_seconds: int = Field(default=300, ge=30, le=86400)
+
     @property
     def broker_url(self) -> str:
         return self.celery_broker_url or self.redis_url or "memory://"
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def unresolved_pipeline_macro(cls, v):
+        # Azure DevOps deja "$(NOMBRE)" sin expandir cuando la variable no existe en el grupo: equivale a vacío.
+        if isinstance(v, str) and re.fullmatch(r"\$\([A-Za-z0-9_.:\-]+\)", v.strip()):
+            return ""
+        return v
 
     @field_validator("jwt_secret_key", "hmac_audit_secret")
     @classmethod

@@ -48,7 +48,7 @@ async def get_settings_(ctx: AuthContext = Depends(require("news:review"))):
 
 
 @router.put("/settings")
-async def put_settings(request: Request, ctx: AuthContext = Depends(require("config:manage"))):
+async def put_settings(request: Request, ctx: AuthContext = Depends(require("review:sampling_manage"))):
     body = await _body(request)
     try:
         before, after = await rv.set_sampling_rate(float(body.get("sampling_rate")), ctx.user["id"])
@@ -62,7 +62,7 @@ async def put_settings(request: Request, ctx: AuthContext = Depends(require("con
 
 
 @router.get("/news/{news_id}/history")
-async def get_history(news_id: str, ctx: AuthContext = Depends(require("news:read"))):
+async def get_history(news_id: str, ctx: AuthContext = Depends(require("review:history_read"))):
     return {"history": await rv.history(news_id)}
 
 
@@ -112,7 +112,7 @@ async def confirm(news_id: str, request: Request, ctx: AuthContext = Depends(req
 
 
 @router.post("/news/{news_id}/reject")
-async def reject(news_id: str, request: Request, ctx: AuthContext = Depends(require("news:review", "news:approve"))):
+async def reject(news_id: str, request: Request, ctx: AuthContext = Depends(require("news:review", "review:reject"))):
     """La pieza no es válida (fragmento, cabecera, repetida…). Se conserva, marcada como rechazada."""
     try:
         r = await rv.close_without_changes(news_id, ctx.user, "rejected", str((await _body(request)).get("justification", "")))

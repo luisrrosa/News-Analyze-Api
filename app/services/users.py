@@ -99,16 +99,18 @@ def is_locked(u: dict) -> bool:
 
 
 async def register_failed_login(u: dict) -> bool:
-    attempts = int(u.get("failed_attempts") or 0) + 1
-    lock = attempts >= MAX_FAILED_ATTEMPTS
-    locked_until = (
-        (datetime.now(timezone.utc) + timedelta(minutes=LOCK_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        if lock else u.get("locked_until")
-    )
-    await get_db()["users"].update_one(
-        {"id": u["id"]}, {"$set": {"failed_attempts": 0 if lock else attempts, "locked_until": locked_until}}
-    )
-    return lock
+    """Incremento atómico: peticiones en paralelo no pueden saltarse el bloqueo (cada una suma 1 en la BD)."""
+    from pymongo import ReturnDocument
+    col = get_db()["users"]
+    after = await col.find_one_and_update({"id": u["id"]}, {"$inc": {"failed_attempts": 1}},
+                                          projection={"failed_attempts": 1}, return_document=ReturnDocument.AFTER)
+    if not after or int(after.get("failed_attempts") or 0) < MAX_FAILED_ATTEMPTS:
+        return False
+    locked_until = (datetime.now(timezone.utc) + timedelta(minutes=LOCK_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    # Solo la petición que alcanza el umbral reinicia el contador y fija el bloqueo.
+    res = await col.update_one({"id": u["id"], "failed_attempts": {"$gte": MAX_FAILED_ATTEMPTS}},
+                               {"$set": {"failed_attempts": 0, "locked_until": locked_until}})
+    return res.modified_count == 1
 
 
 async def register_successful_login(u: dict) -> None:
@@ -126,8 +128,19 @@ async def role_claims_map() -> dict[str, list[str]]:
     return result
 
 
+_ROLE_CACHE: dict = {"at": 0.0, "map": None}
+
+
+def invalidate_role_cache() -> None:
+    _ROLE_CACHE["map"] = None
+
+
 async def resolve_claims(roles: list[str]) -> list[str]:
-    m = await role_claims_map()
+    import time
+    m = _ROLE_CACHE["map"]
+    if m is None or time.monotonic() - _ROLE_CACHE["at"] > 30:
+        m = await role_claims_map()
+        _ROLE_CACHE.update(at=time.monotonic(), map=m)
     return sorted({c for r in roles for c in m.get(r, [])})
 
 
@@ -145,12 +158,21 @@ async def set_role_claims(role: str, claims: list[str]) -> tuple[list[str], list
     current = await col.find_one({"code": role})
     after = sorted(set(claims))
     await col.update_one({"code": role}, {"$set": {"claims": after, "updated_at": iso_now()}}, upsert=True)
+    invalidate_role_cache()
     return list((current or {}).get("claims") or []), after
 
 
 # ---------- Sesiones (también usadas por las rutas que siguen en Next.js) ----------
-async def revoke_all_sessions(user_id: str, reason: str) -> None:
+async def revoke_all_sessions(user_id: str, reason: str, except_session: str | None = None) -> None:
+    query: dict = {"user_id": user_id, "revoked_at": None}
+    if except_session:
+        query["session_id"] = {"$ne": except_session}
+    try:
+        from app.api.deps import forget_session
+        forget_session()
+    except ImportError:
+        pass
     await get_db()["user_sessions"].update_many(
-        {"user_id": user_id, "revoked_at": None},
+        query,
         {"$set": {"revoked_at": datetime.now(timezone.utc), "revoked_reason": reason}},
     )

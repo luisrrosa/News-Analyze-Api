@@ -65,3 +65,8 @@ referencia (`REFERENCE_PDF`, por defecto `../newsAnalyze/storage/reference/…`)
 ```bash
 .venv/Scripts/python -m pytest -q
 ```
+
+## Despliegue en AKS
+
+Pipelines de Azure DevOps (API, worker y Redis) y secretos: [docs/despliegue/API.md](docs/despliegue/API.md).
+`azure-pipelines.yml` (raíz) es la integración continua de pruebas; los despliegues están en `deployment/`.

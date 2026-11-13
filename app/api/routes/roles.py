@@ -1,20 +1,23 @@
 from fastapi import APIRouter, Depends, Request
 
-from app.api.deps import ApiError, AuthContext, require
+from app.api.deps import ApiError, AuthContext, require, require_any
 from app.core.audit import write_audit
-from app.core.rbac import ALL_CLAIMS, SYSTEM_ROLES
+from app.core.rbac import ADMIN_LOCKED_CLAIMS, ALL_CLAIMS, PRIVILEGED_CLAIMS, SYSTEM_ROLES
 from app.services import users
 
 router = APIRouter(prefix="/roles", tags=["roles"])
 
 
 @router.get("")
-async def get_roles(ctx: AuthContext = Depends(require("users:manage"))):
-    return {"role_claims": await users.role_claims_map(), "all_claims": ALL_CLAIMS}
+async def get_roles(ctx: AuthContext = Depends(require_any("roles:manage", "users:read"))):
+    # La interfaz dibuja la matriz con este catálogo (no tiene copia propia).
+    return {"role_claims": await users.role_claims_map(), "all_claims": ALL_CLAIMS,
+            "admin_locked_claims": ADMIN_LOCKED_CLAIMS, "privileged_claims": sorted(PRIVILEGED_CLAIMS),
+            "can_grant_privileged": "admin" in (ctx.user.get("roles") or [])}
 
 
 @router.post("")
-async def set_role_claims(request: Request, ctx: AuthContext = Depends(require("users:manage"))):
+async def set_role_claims(request: Request, ctx: AuthContext = Depends(require("roles:manage"))):
     try:
         body = await request.json()
     except ValueError:
@@ -23,6 +26,11 @@ async def set_role_claims(request: Request, ctx: AuthContext = Depends(require("
     claims = body.get("claims") if isinstance(body, dict) else None
     if role not in SYSTEM_ROLES or not isinstance(claims, list) or not all(isinstance(c, str) for c in claims):
         raise ApiError(400, "Parámetros inválidos (role y claims[] requeridos)")
+    current = (await users.role_claims_map()).get(role, [])
+    changed_privileged = (set(claims) ^ set(current)) & PRIVILEGED_CLAIMS
+    if (changed_privileged or role == "admin") and "admin" not in (ctx.user.get("roles") or []):
+        raise ApiError(403, "Solo un administrador puede modificar el rol admin o los permisos de seguridad: "
+                            + ", ".join(sorted(changed_privileged)), "FORBIDDEN")
     try:
         before, after = await users.set_role_claims(role, claims)
     except users.UserError as e:

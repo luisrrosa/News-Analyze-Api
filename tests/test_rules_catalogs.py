@@ -60,10 +60,21 @@ async def test_edit_validate_approve_and_new_version(roles):
                                  triage["levels"][-1]]}
     assert (await admin.put("/api/v1/rules/draft/triage", json=good)).status_code == 200
 
+    # Doble control: quien editó por última vez no aprueba.
     r = await admin.post("/api/v1/rules/draft/approve")
+    assert r.status_code == 400 and "Doble control" in r.json()["error"]
+    editor = roles["editor"]
+    editor_claims = (await admin.get("/api/v1/roles")).json()["role_claims"]["editor"]
+    assert (await admin.post("/api/v1/roles", json={"role": "editor", "claims": editor_claims + ["rules:approve"]})).status_code == 200
+    try:
+        seen = (await editor.get("/api/v1/rules")).json()["draft"]["updated_at"]
+        assert (await editor.post("/api/v1/rules/draft/approve", json={"updated_at": "2000-01-01T00:00:00.000Z"})).status_code == 400
+        r = await editor.post("/api/v1/rules/draft/approve", json={"updated_at": seen})
+    finally:
+        await admin.post("/api/v1/roles", json={"role": "editor", "claims": editor_claims})
     assert r.status_code == 200, r.text
     approved = r.json()["approved"]
-    assert approved["status"] == "approved" and approved["approved_by"] == admin.user["id"]
+    assert approved["status"] == "approved" and approved["approved_by"] == editor.user["id"]
     assert approved["triage"]["mode"] == "simulation"  # aprobar no activa el triage
 
     state = (await admin.get("/api/v1/rules")).json()

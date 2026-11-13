@@ -4,7 +4,7 @@ Solo se guardan campos no secretos: las credenciales reales irán a Azure Key Va
 """
 from fastapi import APIRouter, Depends, Request
 
-from app.api.deps import ApiError, AuthContext, require
+from app.api.deps import ApiError, AuthContext, check_claim, require
 from app.core.audit import write_audit
 from app.core.db import get_db, iso_now
 
@@ -64,7 +64,7 @@ async def get_config(ctx: AuthContext = Depends(require("config:read"))):
 
 
 @router.post("")
-async def post_config(request: Request, ctx: AuthContext = Depends(require("config:manage"))):
+async def post_config(request: Request, ctx: AuthContext = Depends(require("config:read"))):
     try:
         body = await request.json()
     except ValueError:
@@ -74,11 +74,13 @@ async def post_config(request: Request, ctx: AuthContext = Depends(require("conf
     action, section, data = body.get("action"), body.get("section"), body.get("data") or {}
 
     if action == "test_ftp":
+        check_claim(ctx, "config:test_connection")
         # La conexión SFTP real llegará con el agente de ingesta remota. No se simula un éxito.
         return {"success": False, "latency_ms": 0,
                 "message": "Prueba de conexión SFTP no implementada todavía: llegará con el agente de ingesta remota."}
 
     if action == "update" and section in FIELDS and isinstance(data, dict):
+        check_claim(ctx, "config:smtp_manage" if section == "smtp" else "config:sftp_manage")
         current = await load()
         changes = _clean(section, data)
         updated = {**current, section: {**current[section], **changes}}

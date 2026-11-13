@@ -16,6 +16,7 @@ x-api-common: &api-common
   env_file: .env
   environment:
     REDIS_URL: redis://redis:6379/0
+    STORAGE_BACKEND: local          # en desarrollo el PDF se guarda en ./storage (en AKS: memory)
     STORAGE_ROOT: /data/storage
     INGEST_FOLDER: /data/storage/inbox
     COOKIE_SECURE: "false"          # desarrollo sobre http://localhost
@@ -35,30 +36,30 @@ services:
 
   worker:
     <<: *api-common
-    command: ["celery", "-A", "app.worker", "worker", "--loglevel=info", "--concurrency=2"]
+    command: ["worker_only"]        # rol de docker-entrypoint.sh (beat va aparte)
     healthcheck:
       disable: true
 
   beat:
     <<: *api-common
-    command: ["celery", "-A", "app.worker", "beat", "--loglevel=info", "--schedule", "/tmp/celerybeat-schedule"]
+    command: ["beat"]
     healthcheck:
       disable: true
 
   agent:
     <<: *api-common
-    command: ["python", "-m", "app.agents.folder_ingest"]
+    command: ["agent"]
     healthcheck:
       disable: true
 
   web:
     build:
       context: ../newsAnalyze
-      args:
-        API_INTERNAL_URL: http://api:8000
     # Sin env_file: la interfaz no necesita secretos (MongoDB, JWT y auditoría viven solo en la api).
+    environment:
+      API_INTERNAL_URL: http://api:8000   # se lee al arrancar
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "${WEB_PORT:-3000}:8080"
     depends_on:
       api:
         condition: service_healthy

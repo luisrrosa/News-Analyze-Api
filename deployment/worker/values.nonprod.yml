@@ -1,0 +1,44 @@
+nameOverride: news-analyze-worker
+
+image:
+  pullPolicy: Always
+  # Variables no secretas. Los secretos llegan por overrideValues (deployment/pipeline.yml).
+  env:
+    APP_ROLE: "worker"
+    WORKER_CONCURRENCY: "2"
+    APP_ENV: "development"
+    MONGODB_DB_NAME: "news_analize"
+    # El PDF subido solo vive en Redis mientras el worker lo procesa (no se conserva).
+    STORAGE_BACKEND: "memory"
+    UPLOAD_TTL_SECONDS: "3600"
+    DOCUMENTS_MAX_SIZE_MB: "50"
+    # Solo la web (proxy interno) llama a la API: se confía en su X-Forwarded-For.
+    TRUST_PROXY_HEADERS: "true"
+    COOKIE_SECURE: "true"
+    OCR_ENGINE: "tesseract"
+    SFTP_PORT: "22"
+    SFTP_POLL_SECONDS: "300"
+    TZ: "America/Santo_Domingo"
+
+# El worker no atiende HTTP: sin ingress ni sondas HTTP (Kubernetes lo reinicia si el proceso termina).
+ingress:
+  enabled: false
+
+livenessProbe:
+  enabled: false
+readinessProbe:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 384Mi
+  limits:
+    cpu: "1"
+    memory: 1536Mi
+
+# El worker no recibe conexiones.
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: ingress-nginx
+  allowSameNamespace: false

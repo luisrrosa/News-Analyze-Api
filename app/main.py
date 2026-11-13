@@ -24,9 +24,13 @@ async def lifespan(_: FastAPI):
     await run_bootstrap(database)
     # Noticias anteriores a la Fase 5 sin temas provisionales guardados: se calculan en segundo plano.
     pending = None
-    if await database["news"].find_one({"provisional_topics_version": {"$exists": False}}, projection={"_id": 1}):
-        from app.services.topics import recompute_news_topics
-        pending = asyncio.create_task(recompute_news_topics())
+    if await database["news"].find_one({"$or": [{"provisional_topics_version": {"$exists": False}},
+                                                 {"provisional_topic_terms": {"$exists": False}, "topics_manual": {"$ne": True}}]},
+                                        projection={"_id": 1}):
+        from app.worker import enqueue_topic_recompute
+        if not enqueue_topic_recompute():
+            from app.services.topics import recompute_news_topics
+            pending = asyncio.create_task(recompute_news_topics())
     yield
     if pending and not pending.done():
         pending.cancel()
@@ -45,12 +49,34 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json" if s.app_env == "development" else None,
     )
 
+    from app.core.body_limit import BodyLimitMiddleware
+    app.add_middleware(BodyLimitMiddleware)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        # Cabeceras defensivas también en la API (OWASP ZAP 10021 / 90004), aunque solo la llame la web.
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        return response
+
     @app.exception_handler(ApiError)
     async def api_error_handler(_: Request, exc: ApiError):
         content = {"error": exc.error}
         if exc.code:
             content["code"] = exc.code
         return JSONResponse(content, status_code=exc.status, headers=exc.headers)
+
+    from app.core.audit import AuditUnavailable
+
+    @app.exception_handler(AuditUnavailable)
+    async def audit_unavailable(_: Request, exc: AuditUnavailable):
+        # Falla cerrada: sin registro de auditoría no se entrega la descarga ni la exportación.
+        log.error("auditoría no disponible para %s: acción cancelada", exc)
+        return JSONResponse({"error": "No se pudo registrar la acción en la auditoría; inténtelo de nuevo.",
+                             "code": "AUDIT_UNAVAILABLE"}, status_code=503)
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(_: Request, exc: RequestValidationError):
@@ -75,6 +101,19 @@ def create_app() -> FastAPI:
     @app.get("/api/health", tags=["health"])
     async def health():
         await db.get_db().command("ping")
+        return {"status": "ok"}
+
+    # Sondas de Kubernetes (chart devops-template): vida = el proceso responde; listo = además llega a MongoDB.
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz():
+        return {"status": "ok"}
+
+    @app.get("/readyz", include_in_schema=False)
+    async def readyz():
+        try:
+            await db.get_db().command("ping")
+        except Exception:
+            return JSONResponse({"status": "unavailable"}, status_code=503)
         return {"status": "ok"}
 
     for r in (auth.router, users.router, roles.router, audit.router, documents.router, news.router, reports.router, rules.router, catalogs.router, review.router, config.router):

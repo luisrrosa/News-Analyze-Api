@@ -7,6 +7,9 @@ Tareas:
   process_document  → extrae un documento (reintentos con espera exponencial 30 s / 2 min / 8 min)
   dispatch_outbox   → cada 5 s publica eventos PENDING (garantiza que un documento registrado siempre genera trabajo)
   reconcile_jobs    → cada 60 s devuelve a la cola los trabajos con concesión vencida
+  ingest_sftp       → cada SFTP_POLL_SECONDS toma los PDF nuevos del file server (si SFTP está configurado)
+
+En AKS el worker lleva el programador incluido (una sola réplica): celery -A app.worker worker -B
 """
 import asyncio
 import logging
@@ -27,8 +30,12 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_default_queue="news_analyze",
     beat_schedule={
-        "dispatch-outbox": {"task": "app.worker.dispatch_outbox", "schedule": 5.0},
+        # La API publica al recibir el documento; esto solo recoge lo que quedó pendiente.
+        "dispatch-outbox": {"task": "app.worker.dispatch_outbox", "schedule": 15.0},
         "reconcile-jobs": {"task": "app.worker.reconcile_jobs", "schedule": 60.0},
+        "ingest-sftp": {"task": "app.worker.ingest_sftp", "schedule": float(_s.sftp_poll_seconds)},
+        "audit-anchor": {"task": "app.worker.audit_anchor", "schedule": 3600.0},
+        "audit-verify-full": {"task": "app.worker.audit_verify_full", "schedule": 86400.0},
     },
 )
 
@@ -66,14 +73,17 @@ async def publish_pending_events(limit: int = 50) -> int:
     return published
 
 
+_loop: asyncio.AbstractEventLoop | None = None
+
+
 def _run(coro_factory):
-    async def wrapper():
-        await db.connect()
-        try:
-            return await coro_factory()
-        finally:
-            await db.close()
-    return asyncio.run(wrapper())
+    """Un event loop y un cliente MongoDB por proceso del worker (antes: uno nuevo por tarea, cada 5 s)."""
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+        _loop.run_until_complete(db.connect())
+    return _loop.run_until_complete(coro_factory())
 
 
 @celery_app.task(name="app.worker.process_document", bind=True, max_retries=None)
@@ -103,3 +113,67 @@ def dispatch_outbox():
 def reconcile_jobs():
     from app.services.pipeline import reconcile_expired_jobs
     return _run(reconcile_expired_jobs)
+
+
+@celery_app.task(name="app.worker.ingest_sftp")
+def ingest_sftp():
+    from app import sftp
+    if not sftp.configured():
+        return {"disabled": True}
+    from app.agents.sftp_ingest import run_once
+    return _run(run_once)
+
+
+@celery_app.task(name="app.worker.audit_anchor")
+def audit_anchor():
+    """Cada hora: ancla firmada de la cabeza de la cadena (también queda en el log, fuera de MongoDB)."""
+    from app.core.audit import write_anchor
+    anchor = _run(write_anchor)
+    return {"seq_num": anchor["seq_num"]} if anchor else None
+
+
+@celery_app.task(name="app.worker.audit_verify_full")
+def audit_verify_full():
+    """Cada día: verificación completa de la cadena (la pantalla hace la incremental)."""
+    from app.core.audit import verify_chain
+    result = _run(lambda: verify_chain(full=True))
+    if not result["ok"]:
+        log.error("AUDIT_CHAIN_BROKEN seq=%s motivo=%s", result["first_broken_seq"], result.get("reason"))
+    return {"ok": result["ok"], "verified": result["verified_count"]}
+
+
+def enqueue_topic_recompute() -> bool:
+    """Encola el recálculo de temas en el worker. False si no hay broker (pruebas/síncrono): lo hace quien llama."""
+    s = get_settings()
+    if s.celery_always_eager or s.broker_url.startswith("memory://"):
+        return False
+    celery_app.send_task("app.worker.recompute_topics")
+    return True
+
+
+@celery_app.task(name="app.worker.recompute_topics", bind=True, max_retries=None)
+def recompute_topics(self):
+    """Un solo recálculo a la vez (candado en MongoDB). Si hay otro en curso, se reintenta después para aplicar
+    la versión más reciente de las reglas."""
+    async def go():
+        from datetime import timedelta
+        from app.core.db import utcnow
+        from app.services.topics import recompute_news_topics
+        col = get_db()["system_configs"]
+        now = utcnow()
+        lock = await col.find_one_and_update(
+            {"key": "lock.recompute_topics", "$or": [{"until": {"$lt": now}}, {"until": None}]},
+            {"$set": {"until": now + timedelta(minutes=30)}}, upsert=False)
+        if lock is None:
+            try:
+                await col.insert_one({"key": "lock.recompute_topics", "until": now + timedelta(minutes=30)})
+            except Exception:
+                return "busy"
+        try:
+            return await recompute_news_topics()
+        finally:
+            await col.update_one({"key": "lock.recompute_topics"}, {"$set": {"until": None}})
+    result = _run(go)
+    if result == "busy":
+        raise self.retry(countdown=60)
+    return result

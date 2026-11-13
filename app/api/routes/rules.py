@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Request
 
-from app.api.deps import ApiError, AuthContext, require
+from app.api.deps import ApiError, AuthContext, require, require_any
 from app.core.audit import write_audit
 import asyncio
 
@@ -11,7 +11,10 @@ _background: set = set()
 
 
 def _recompute_later() -> None:
-    """Recalcula los temas de las noticias en segundo plano (no bloquea la respuesta)."""
+    """Recalcula los temas de las noticias en el worker (no en la API). En pruebas, en el acto y en segundo plano."""
+    from app.worker import enqueue_topic_recompute
+    if enqueue_topic_recompute():
+        return
     task = asyncio.create_task(recompute_news_topics())
     _background.add(task)
     task.add_done_callback(_background.discard)
@@ -32,7 +35,8 @@ def _err(e: rules.RuleError) -> ApiError:
 
 
 @router.get("")
-async def overview(ctx: AuthContext = Depends(require("dashboard:read"))):
+async def overview(ctx: AuthContext = Depends(require_any("catalogs:read", "news:read", "news:review", "reports:export"))):
+    # Temas vigentes: también los usan los filtros del explorador, la revisión y los reportes.
     """Versiones, vigente y borrador."""
     active, draft = await rules.get_active(), await rules.get_draft()
     return {"versions": await rules.list_versions(), "active": active, "draft": draft,
@@ -40,7 +44,7 @@ async def overview(ctx: AuthContext = Depends(require("dashboard:read"))):
 
 
 @router.get("/versions/{version}")
-async def version_detail(version: str, ctx: AuthContext = Depends(require("dashboard:read"))):
+async def version_detail(version: str, ctx: AuthContext = Depends(require("catalogs:read"))):
     rs = await rules.get_version(version)
     if not rs:
         raise ApiError(404, "Versión no encontrada")
@@ -48,7 +52,7 @@ async def version_detail(version: str, ctx: AuthContext = Depends(require("dashb
 
 
 @router.post("/draft")
-async def new_draft(request: Request, ctx: AuthContext = Depends(require("topics:manage"))):
+async def new_draft(request: Request, ctx: AuthContext = Depends(require("rules:draft_manage"))):
     body = await _body(request)
     try:
         draft = await rules.create_draft(ctx.user["id"], str(body.get("notes", "")))
@@ -60,7 +64,7 @@ async def new_draft(request: Request, ctx: AuthContext = Depends(require("topics
 
 
 @router.delete("/draft")
-async def delete_draft(ctx: AuthContext = Depends(require("topics:manage"))):
+async def delete_draft(ctx: AuthContext = Depends(require("rules:draft_manage"))):
     try:
         version = await rules.discard_draft()
     except rules.RuleError as e:
@@ -71,7 +75,7 @@ async def delete_draft(ctx: AuthContext = Depends(require("topics:manage"))):
 
 
 @router.put("/draft/notes")
-async def draft_notes(request: Request, ctx: AuthContext = Depends(require("topics:manage"))):
+async def draft_notes(request: Request, ctx: AuthContext = Depends(require("rules:draft_manage"))):
     try:
         draft = await rules.update_notes(str((await _body(request)).get("notes", "")), ctx.user["id"])
     except rules.RuleError as e:
@@ -120,9 +124,14 @@ async def edit_triage(request: Request, ctx: AuthContext = Depends(require("tria
 
 
 @router.post("/draft/approve")
-async def approve(ctx: AuthContext = Depends(require("topics:manage", "triage:calibrate"))):
+async def approve(request: Request, ctx: AuthContext = Depends(require("rules:approve"))):
     try:
-        approved, previous = await rules.approve_draft(ctx.user["id"])
+        body = await request.json()
+    except ValueError:
+        body = {}
+    seen = body.get("updated_at") if isinstance(body, dict) and isinstance(body.get("updated_at"), str) else None
+    try:
+        approved, previous = await rules.approve_draft(ctx.user["id"], seen)
     except rules.RuleError as e:
         raise _err(e)
     prev_doc = await rules.get_version(previous) if previous else None

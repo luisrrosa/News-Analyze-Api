@@ -280,20 +280,28 @@ async def update_notes(notes: str, user_id: str) -> dict:
     return await _update_draft({"notes": notes.strip()[:2000]}, user_id)
 
 
-async def approve_draft(user_id: str) -> tuple[dict, str | None]:
+async def approve_draft(user_id: str, seen_updated_at: str | None = None) -> tuple[dict, str | None]:
     draft = await get_draft()
     if not draft:
         raise RuleError("No hay borrador para aprobar")
+    # Doble control: quien hizo el último cambio del borrador no puede ponerlo en vigor.
+    if draft.get("updated_by") == user_id:
+        raise RuleError("Doble control: quien editó por última vez el borrador no puede aprobarlo; debe aprobarlo otra persona")
+    # Se aprueba exactamente lo que el aprobador vio (si alguien editó después, debe volver a revisarlo).
+    if seen_updated_at and seen_updated_at != draft.get("updated_at"):
+        raise RuleError("El borrador cambió desde que lo abrió; vuelva a revisarlo antes de aprobar")
     validate_triage(draft["triage"])
     if not any(t["active"] for t in draft["topics"]):
         raise RuleError("El catálogo debe tener al menos un tema activo")
     col = get_db()["rule_sets"]
     now = iso_now()
     previous = await get_active()
+    res = await col.update_one({"version": draft["version"], "status": "draft", "updated_at": draft.get("updated_at")},
+                               {"$set": {"status": "approved", "approved_by": user_id, "approved_at": now, "valid_from": now}})
+    if res.modified_count != 1:
+        raise RuleError("El borrador cambió mientras se aprobaba; vuelva a revisarlo")
     if previous:
         await col.update_one({"version": previous["version"]}, {"$set": {"status": "retired", "valid_to": now}})
-    await col.update_one({"version": draft["version"], "status": "draft"},
-                         {"$set": {"status": "approved", "approved_by": user_id, "approved_at": now, "valid_from": now}})
     return await get_version(draft["version"]), previous["version"] if previous else None  # type: ignore[return-value]
 
 

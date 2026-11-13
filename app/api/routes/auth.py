@@ -75,11 +75,22 @@ async def login(request: Request, response: Response, meta: RequestMeta = Depend
             or len(email) > 254 or len(password) > 256:
         raise ApiError(400, "Email y contraseña requeridos")
     email = email.strip().lower()
+    # Además del límite por IP, un límite por cuenta (aunque las IP roten).
+    allowed, retry = await hit(f"login-account:{email}", s.login_rate_limit * 2, s.login_rate_window_seconds)
+    if not allowed:
+        raise ApiError(429, "Demasiados intentos. Espere antes de volver a intentar.", "RATE_LIMITED",
+                       headers={"Retry-After": str(retry)})
 
     user = await users.find_by_email(email)
     ok, needs_rehash = verify_password(password, user.get("password_hash") if user else None)
     base = {"ip_address": meta.ip_address, "request_id": meta.request_id}
 
+    if user and users.is_locked(user) and not ok:
+        # Bloqueada y con clave incorrecta: respuesta genérica (no revela que la cuenta existe).
+        await write_audit(user_id=user["id"], user_email=user["email"], user_roles=user["roles"],
+                          action="AUTH_LOGIN_BLOCKED", entity_type="USER", entity_id=user["id"], status="DENIED",
+                          error_message="Intento sobre cuenta bloqueada", **base)
+        raise ApiError(401, "Credenciales inválidas", "INVALID_CREDENTIALS")
     if user and users.is_locked(user):
         await write_audit(user_id=user["id"], user_email=user["email"], user_roles=user["roles"],
                           action="AUTH_LOGIN_BLOCKED", entity_type="USER", entity_id=user["id"], status="DENIED",
@@ -157,6 +168,8 @@ async def me(ctx: AuthContext = Depends(require(allow_password_change_pending=Tr
 @router.post("/logout")
 async def logout(response: Response, ctx: AuthContext = Depends(require(allow_password_change_pending=True))):
     await sessions.revoke_session(ctx.session_id, "logout")
+    from app.api.deps import forget_session
+    forget_session(ctx.session_id)
     _clear_auth_cookies(response)
     await write_audit(**ctx.actor(), action="AUTH_LOGOUT", entity_type="USER_SESSION",
                       entity_id=ctx.session_id, status="SUCCESS")
@@ -171,6 +184,11 @@ async def change_password(request: Request, ctx: AuthContext = Depends(require(a
     if not isinstance(current, str) or not isinstance(new, str):
         raise ApiError(400, "Solicitud inválida")
 
+    s = get_settings()
+    allowed, retry = await hit(f"change-password:{ctx.user['id']}", 5, s.login_rate_window_seconds)
+    if not allowed:
+        raise ApiError(429, "Demasiados intentos. Espere antes de volver a intentar.", "RATE_LIMITED",
+                       headers={"Retry-After": str(retry)})
     user = await users.find_by_id(ctx.user["id"])
     ok, _ = verify_password(current, (user or {}).get("password_hash"))
     if not ok:
@@ -183,6 +201,10 @@ async def change_password(request: Request, ctx: AuthContext = Depends(require(a
         raise ApiError(400, "La nueva contraseña debe ser distinta de la actual")
 
     await users.set_password_plain(ctx.user["id"], new, must_change=False)
+    # Cualquier otra sesión (p. ej. un refresh token robado) deja de valer; se conserva la actual.
+    await users.revoke_all_sessions(ctx.user["id"], "password_changed", except_session=ctx.session_id)
+    from app.api.deps import forget_session
+    forget_session()
     await write_audit(**ctx.actor(), action="AUTH_PASSWORD_CHANGED", entity_type="USER",
                       entity_id=ctx.user["id"], status="SUCCESS")
     return {"success": True, "message": "Contraseña actualizada."}

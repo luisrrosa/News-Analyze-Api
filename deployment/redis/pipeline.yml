@@ -1,0 +1,90 @@
+# Redis de NEWS ANALYZE dentro del clúster: broker de Celery y copia temporal (en memoria) de los PDF subidos.
+# Sin disco ni persistencia: si se reinicia, los trabajos se recuperan del outbox de MongoDB.
+# Solo interno (http://news-analyze-redis:6379), con contraseña. Se despliega antes que la API y el worker.
+trigger:
+  batch: false
+  branches:
+    include:
+      - main
+      - release/*
+      - releases/*
+  paths:
+    include:
+      - deployment/redis/*
+
+pr:
+  autoCancel: true
+  paths:
+    include:
+      - "./feature/*"
+
+parameters:
+  - name: "Release_Dev"
+    displayName: "Develop"
+    type: boolean
+    default: true
+  # Producción solo se despliega desde ramas release/* (o releases/*); main va solo a desarrollo.
+  - name: "Release_Prod"
+    displayName: "Production"
+    type: boolean
+    default: true
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: "devops.templates"
+      ref: refs/tags/1.0.86
+
+variables:
+  - group: "Placebet.Shared"
+
+# Variables no secretas: deployment/values.*.yml (image.env). Aquí solo los secretos, desde los
+# grupos de variables. Ver docs/despliegue/API.md (sección Redis).
+extends:
+  template: pipelines/service-pipeline.yml@templates
+  parameters:
+    serviceName: "news-analyze-redis"
+    dockerFile: "Dockerfile"
+    workingDirectory: "deployment/redis"
+    chartName: "devops-template"
+    chartVersion: "1.0.91"
+    buildWithSecrets: true
+    acrServiceConnection: "$(AcrServiceConnection)"
+    azureRepository: "$(AcrName)"
+    buildStageName: "BuildAndPublishStage"
+    deploymentTargets:
+      - name: "DevDeployment"
+        displayName: "Deploy to Development"
+        dependsOn: [BuildAndPublishStage]
+        condition: and(succeeded(), eq('${{ parameters.Release_Dev }}', true), ne(variables['Build.Reason'], 'PullRequest'))
+        environment: "Development"
+        namespace: "placebet-develop"
+        azureSubscription: "$(AzureSubscription)"
+        azureResourceGroup: "$(AzureResourceGroup)"
+        kubernetesCluster: "$(KubernetesCluster)"
+        timeoutInMinutes: 3
+        valueFile: "deployment/redis/values.nonprod.yml"
+        variableGroups:
+          - "Placebet.Dev"
+        overrideValues: |
+          replicaCount=1
+          image.env.REDIS_PASSWORD="$(NEWS_ANALYZE_REDIS_PASSWORD)"
+
+      - name: "ProdDeployment"
+        displayName: "Deploy to Production"
+        dependsOn: [BuildAndPublishStage, DevDeployment]
+        # Solo desde ramas de release: main nunca llega a producción.
+        condition: and(succeeded(), eq('${{ parameters.Release_Prod }}', true), ne(variables['Build.Reason'], 'PullRequest'), or(startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), startsWith(variables['Build.SourceBranch'], 'refs/heads/releases/')))
+        environment: "Production"
+        namespace: "placebet"
+        azureSubscription: "$(AzureSubscription)"
+        azureResourceGroup: "$(AzureResourceGroup)"
+        kubernetesCluster: "$(KubernetesCluster)"
+        timeoutInMinutes: 3
+        valueFile: "deployment/redis/values.prod.yml"
+        variableGroups:
+          - "Placebet.Prod"
+        overrideValues: |
+          replicaCount=1
+          image.env.REDIS_PASSWORD="$(NEWS_ANALYZE_REDIS_PASSWORD)"

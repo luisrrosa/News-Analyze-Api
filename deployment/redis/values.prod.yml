@@ -1,0 +1,45 @@
+nameOverride: news-analyze-redis
+
+image:
+  pullPolicy: Always
+  # REDIS_PASSWORD llega por overrideValues (deployment/redis/pipeline.yml).
+  env:
+    REDIS_MAXMEMORY: "450mb"
+
+# Solo dentro del namespace: redis://:<clave>@news-analyze-redis:6379/0
+service:
+  port: 6379
+
+ingress:
+  enabled: false
+
+# Las sondas del chart son HTTP; Redis no habla HTTP. Kubernetes lo reinicia si el proceso termina.
+livenessProbe:
+  enabled: false
+readinessProbe:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 600Mi
+
+# Solo la API y el worker hablan con Redis (los PDF temporales y la cola viven aquí).
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: ingress-nginx
+  allowSameNamespace: false
+  extraIngress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: news-analyze-api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: news-analyze-worker
+      ports:
+        - protocol: TCP
+          port: 6379
