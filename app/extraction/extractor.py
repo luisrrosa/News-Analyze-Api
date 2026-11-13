@@ -21,6 +21,8 @@ from urllib.parse import urlparse
 
 import pymupdf
 
+from app.extraction import ocr
+
 EXTRACTOR_VERSION = "pymupdf-det-1.0"
 
 HEADER_RE = re.compile(
@@ -64,6 +66,7 @@ class Line:
     text: str
     size: float
     spans: list[tuple[str, bool]]  # (texto, negrita)
+    ocr: bool = False
 
     @property
     def bold_all(self) -> bool:
@@ -117,9 +120,9 @@ def _collapse(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _page_lines(page: pymupdf.Page, pno: int) -> list[Line]:
+def _page_lines(page: pymupdf.Page, pno: int, textpage: pymupdf.TextPage | None = None) -> list[Line]:
     lines: list[Line] = []
-    for block in page.get_text("dict")["blocks"]:
+    for block in page.get_text("dict", textpage=textpage)["blocks"]:
         if block.get("type") != 0:
             continue
         for ln in block["lines"]:
@@ -128,12 +131,12 @@ def _page_lines(page: pymupdf.Page, pno: int) -> list[Line]:
             if not text.strip():
                 continue
             size = max((s["size"] for s in ln["spans"] if s["text"].strip()), default=0)
-            lines.append(Line(pno, ln["bbox"][1], ln["bbox"][0], text, size, spans))
+            lines.append(Line(pno, ln["bbox"][1], ln["bbox"][0], text, size, spans, textpage is not None))
     lines.sort(key=lambda l: (round(l.y, 1), l.x))
     return lines
 
 
-def text_quality(text: str) -> dict:
+def text_quality(text: str, method: str = "digital") -> dict:
     """Métrica compuesta (Plan V3.0 §5.6). El diccionario no se usa como criterio único."""
     n = len(text) or 1
     printable = sum(1 for c in text if c.isprintable() or c in "\n\t") / n
@@ -148,7 +151,7 @@ def text_quality(text: str) -> dict:
         "pct_single_letter": round(single, 4),
         "extraction_quality": round(score, 4),
         "text_quality_failed": failed,
-        "method": "digital",
+        "method": method,
     }
 
 
@@ -190,6 +193,8 @@ class _Builder:
     def add(self, line: Line) -> None:
         if line.page not in self.pages:
             self.pages.append(line.page)
+        if line.ocr and "ocr_text" not in self.flags:
+            self.flags.append("ocr_text")
         self.raw_lines.append(line.text)
         stripped = line.text.strip()
 
@@ -249,7 +254,7 @@ class _Builder:
             publication_date, basis = summary_date, "from_summary"
             self.flags.append("publication_date_inferred")
 
-        quality = text_quality(text_original)
+        quality = text_quality(text_original, "ocr" if "ocr_text" in self.flags else "digital")
         confidence = 1.0
         if "title_not_found" in self.flags:
             confidence -= 0.3
@@ -257,6 +262,8 @@ class _Builder:
             confidence -= 0.1
         if quality["text_quality_failed"]:
             confidence -= 0.3
+        if "ocr_text" in self.flags:
+            confidence -= 0.2
         if "media_unresolved" in self.flags:
             confidence -= 0.1
 
@@ -298,10 +305,20 @@ def extract(pdf_bytes: bytes, media_aliases: dict[str, str] | None = None) -> Ex
         current: _Builder | None = None
         block: str | None = None
         previous_was_header = False
+        scanned_without_ocr: list[int] = []
 
         for pno, page in enumerate(doc, start=1):
             height = page.rect.height
-            lines = _page_lines(page, pno)
+            textpage = None
+            if ocr.is_scanned(page):
+                try:
+                    textpage = ocr.ocr_textpage(page)
+                    warnings.append(f"Pág. {pno}: página escaneada; texto obtenido por OCR (requiere revisión)")
+                except ocr.OcrUnavailable as e:
+                    scanned_without_ocr.append(pno)
+                    warnings.append(f"Pág. {pno}: página escaneada sin capa de texto y sin OCR: {e}")
+            is_ocr = textpage is not None
+            lines = _page_lines(page, pno, textpage)
             body_text: list[str] = []
             footer_found = False
 
@@ -339,7 +356,7 @@ def extract(pdf_bytes: bytes, media_aliases: dict[str, str] | None = None) -> Ex
                     continue
 
                 # Cabecera de ítem
-                hm = HEADER_RE.match(_collapse(stripped)) if not line.bold_all and line.size < 11 else None
+                hm = HEADER_RE.match(_collapse(stripped)) if is_ocr or (not line.bold_all and line.size < 11) else None
                 if hm:
                     if current:
                         items.append(current.build(summary_date))
@@ -348,7 +365,7 @@ def extract(pdf_bytes: bytes, media_aliases: dict[str, str] | None = None) -> Ex
                     continue
 
                 # Autor partido en una segunda línea de la cabecera (mismo cuerpo de letra, sin negrita).
-                if previous_was_header and current and line.size < 11 and not line.bold_all and not current.raw_lines:
+                if previous_was_header and current and not is_ocr and line.size < 11 and not line.bold_all and not current.raw_lines:
                     current.author_extra.append(stripped)
                     continue
                 previous_was_header = False
@@ -360,10 +377,16 @@ def extract(pdf_bytes: bytes, media_aliases: dict[str, str] | None = None) -> Ex
 
             if not footer_found:
                 warnings.append(f"Pág. {pno}: no se encontró el pie institucional")
-            page_quality.append({"page": pno, **text_quality(" ".join(body_text))})
+            page_quality.append({"page": pno, **text_quality(" ".join(body_text), "ocr" if is_ocr else "digital"),
+                                 **({"scanned_without_ocr": True} if pno in scanned_without_ocr else {})})
 
         if current:
             items.append(current.build(summary_date))
+
+        if scanned_without_ocr and not items:
+            raise ocr.OcrUnavailable(
+                f"El documento es escaneado (páginas {', '.join(map(str, scanned_without_ocr))}) y el OCR no está disponible: "
+                f"{ocr.unavailable_reason()}")
 
         return ExtractionResult(
             extractor_version=EXTRACTOR_VERSION,

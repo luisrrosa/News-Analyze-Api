@@ -5,6 +5,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
+
+# OCR de excepción para PDFs escaneados (Plan V3.0 §5.6): Tesseract con idioma español.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-spa \
+    && rm -rf /var/lib/apt/lists/*
+ENV OCR_ENGINE=tesseract
+
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 

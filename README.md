@@ -55,6 +55,13 @@ Requieren un MongoDB accesible (`TEST_MONGODB_URI`, por defecto `mongodb://local
 `news_analyze_pytest_*` y la borra al terminar; la cola corre en modo síncrono. Las pruebas del extractor usan el PDF de
 referencia (`REFERENCE_PDF`, por defecto `../newsAnalyze/storage/reference/…`) y se omiten si no está.
 
+- **CI (Azure DevOps):** el PDF de referencia no se versiona. Súbelo una vez en *Pipelines → Library → Secure files*,
+  autoriza su uso en el pipeline y define la variable `REFERENCE_PDF_SECURE_FILE` con su nombre; el paso
+  `DownloadSecureFile@1` lo descarga y exporta `REFERENCE_PDF`. Sin la variable, esas pruebas se omiten.
+- **OCR:** las páginas escaneadas (casi sin texto digital y con imágenes) pasan por Tesseract (`OCR_ENGINE=tesseract`,
+  idioma `spa`) y sus noticias se marcan `ocr_text` para revisión. La imagen Docker y el CI instalan Tesseract; en local,
+  si no está, la prueba de OCR real se omite y un documento totalmente escaneado falla con un mensaje explícito.
+
 ```bash
 .venv/Scripts/python -m pytest -q
 ```

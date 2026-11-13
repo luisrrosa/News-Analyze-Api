@@ -14,13 +14,14 @@ from app.core.audit import write_audit
 from app.core.config import get_settings
 from app.core.db import get_db, iso_now, utcnow
 from app.extraction.extractor import ExtractedItem, extract
+from app.extraction.ocr import OcrUnavailable
 from app.extraction.simhash import DUPLICATE_MAX, RELATED_MAX, SIMHASH_VERSION, from_hex, hamming, simhash64, to_hex
 from app.storage import get_storage
 
 log = logging.getLogger("pipeline")
 
 # Señales de extracción que exigen revisión humana (Plan V3.0 §11.6, capa determinista).
-REVIEW_FLAGS = {"title_not_found", "media_unresolved", "text_quality_failed"}
+REVIEW_FLAGS = {"title_not_found", "media_unresolved", "text_quality_failed", "ocr_text"}
 WARNING_FLAGS = REVIEW_FLAGS | {"multiple_urls"}
 RETRY_BACKOFF_SECONDS = [30, 120, 480]
 
@@ -110,7 +111,10 @@ async def process_job(job_id: str) -> str:
         if data is None:
             raise PermanentError("El archivo original no está en el almacenamiento")
         from app.services.catalogs import media_alias_map
-        result = extract(data, await media_alias_map() or None)
+        try:
+            result = extract(data, await media_alias_map() or None)
+        except OcrUnavailable as e:
+            raise PermanentError(str(e)) from e
         if not result.items:
             raise PermanentError("No se identificó ninguna noticia en el documento")
 

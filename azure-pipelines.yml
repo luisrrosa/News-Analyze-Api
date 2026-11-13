@@ -39,9 +39,24 @@ stages:
           - script: |
               python -m pip install --upgrade pip
               pip install -r requirements-dev.txt
-            displayName: Instalar dependencias
-          - script: python -m pytest -q --junitxml=test-results.xml
+              sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-spa
+            displayName: Instalar dependencias (incluye Tesseract para la ruta OCR)
+          # PDF de referencia: NO se versiona (contiene información institucional). Se sube una vez a
+          # Pipelines > Library > Secure files con el nombre de la variable REFERENCE_PDF_SECURE_FILE.
+          # Si la variable no está definida, el paso se omite y las pruebas de extracción quedan como "skipped".
+          - task: DownloadSecureFile@1
+            name: referencePdf
+            displayName: Descargar PDF de referencia (Secure file)
+            condition: ne(variables['REFERENCE_PDF_SECURE_FILE'], '')
+            inputs:
+              secureFile: $(REFERENCE_PDF_SECURE_FILE)
+          - script: |
+              # Si el paso anterior se omitió, la macro queda sin expandir y el archivo no existe.
+              if [ -f "$SECURE_PDF_PATH" ]; then export REFERENCE_PDF="$SECURE_PDF_PATH"; fi
+              python -m pytest -q -rs --junitxml=test-results.xml
             displayName: Ejecutar pruebas
+            env:
+              SECURE_PDF_PATH: $(referencePdf.secureFilePath)
           - task: PublishTestResults@2
             condition: succeededOrFailed()
             inputs:

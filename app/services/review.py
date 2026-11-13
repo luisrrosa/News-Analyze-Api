@@ -24,6 +24,7 @@ REASON_LABELS = {
     "title_not_found": "Titular no identificado",
     "media_unresolved": "Medio sin resolver",
     "text_quality_failed": "Calidad de texto insuficiente",
+    "ocr_text": "Texto obtenido por OCR (página escaneada)",
     "duplicate_link_verification": "Verificar vínculo de duplicado",
     "quality_sample": "Muestreo de control de calidad",
 }
