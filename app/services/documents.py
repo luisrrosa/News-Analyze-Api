@@ -15,7 +15,7 @@ from pymongo.errors import DuplicateKeyError, OperationFailure
 from app.core.config import get_settings
 from app.core.db import get_db, iso_now
 from app.extraction.extractor import EXTRACTOR_VERSION
-from app.storage import get_storage
+from app.storage import keep_upload
 
 log = logging.getLogger("documents")
 
@@ -93,7 +93,9 @@ async def _insert_all(document: dict, job: dict, event: dict) -> None:
     await db["outbox_events"].insert_one(event)
 
 
-async def receive_document(data: bytes, filename: str, actor: Actor, source: str) -> dict:
+async def receive_document(data: bytes, filename: str, actor: Actor, source: str, storage_key: str | None = None) -> dict:
+    """storage_key: dónde está el original si no se recibió por la API (p. ej. sftp:<ruta>); si no, se guarda
+    según STORAGE_BACKEND (disco en desarrollo, memoria temporal en AKS)."""
     page_count = validate_pdf(data)
     sha = hashlib.sha256(data).hexdigest()
     db = get_db()
@@ -102,7 +104,7 @@ async def receive_document(data: bytes, filename: str, actor: Actor, source: str
     if existing:
         raise DocumentRejected(409, "Este PDF ya fue cargado anteriormente.", "DUPLICATE_DOCUMENT", existing["id"])
 
-    storage_key = get_storage().put(sha, data)
+    storage_key = storage_key or keep_upload(sha, data)
     now = iso_now()
     document_id = f"doc_{uuid.uuid4()}"
     job_id = f"job_{uuid.uuid4()}"

@@ -1,0 +1,108 @@
+# Compila la imagen de la API de NEWS ANALYZE y la despliega en AKS, como Ms.RecargaMobile.Api y Ms.Leco.Counter.Reader.
+# La API NO tiene ingress: solo la web (NewsAnalyze.Web) le habla, por la red interna del namespace
+# (http://news-analyze-api). El worker y Redis tienen sus propios pipelines (deployment/worker, deployment/redis).
+trigger:
+  batch: false
+  branches:
+    include:
+      - main
+      - release/*
+      - releases/*
+  paths:
+    exclude:
+      - deployment/worker/*
+      - deployment/redis/*
+      - docs/*
+
+pr:
+  autoCancel: true
+  paths:
+    include:
+      - "./feature/*"
+
+parameters:
+  - name: "Release_Dev"
+    displayName: "Develop"
+    type: boolean
+    default: true
+  # Producción solo se despliega desde ramas release/* (o releases/*); main va solo a desarrollo.
+  - name: "Release_Prod"
+    displayName: "Production"
+    type: boolean
+    default: true
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: "devops.templates"
+      ref: refs/tags/1.0.86
+
+variables:
+  - group: "Placebet.Shared"
+
+# Variables no secretas: deployment/values.*.yml (image.env). Aquí solo los secretos, desde los
+# grupos de variables. Ver docs/despliegue/API.md.
+extends:
+  template: pipelines/service-pipeline.yml@templates
+  parameters:
+    serviceName: "news-analyze-api"
+    dockerFile: "Dockerfile"
+    workingDirectory: "."
+    chartName: "devops-template"
+    chartVersion: "1.0.91"
+    buildWithSecrets: true
+    acrServiceConnection: "$(AcrServiceConnection)"
+    azureRepository: "$(AcrName)"
+    buildStageName: "BuildAndPublishStage"
+    deploymentTargets:
+      - name: "DevDeployment"
+        displayName: "Deploy to Development"
+        dependsOn: [BuildAndPublishStage]
+        condition: and(succeeded(), eq('${{ parameters.Release_Dev }}', true), ne(variables['Build.Reason'], 'PullRequest'))
+        environment: "Development"
+        namespace: "placebet-develop"
+        azureSubscription: "$(AzureSubscription)"
+        azureResourceGroup: "$(AzureResourceGroup)"
+        kubernetesCluster: "$(KubernetesCluster)"
+        timeoutInMinutes: 3
+        valueFile: "deployment/values.nonprod.yml"
+        variableGroups:
+          - "Placebet.Dev"
+        overrideValues: |
+          replicaCount=1
+          image.env.MONGODB_URI="$(NEWS_ANALYZE_CONNECTION_STRING)"
+          image.env.JWT_SECRET_KEY="$(NEWS_ANALYZE_JWT_SECRET)"
+          image.env.HMAC_AUDIT_SECRET="$(NEWS_ANALYZE_HMAC_AUDIT_SECRET)"
+          image.env.REDIS_URL="redis://:$(NEWS_ANALYZE_REDIS_PASSWORD)@news-analyze-redis:6379/0"
+          image.env.SFTP_HOST="$(NEWS_ANALYZE_SFTP_HOST)"
+          image.env.SFTP_USER="$(NEWS_ANALYZE_SFTP_USER)"
+          image.env.SFTP_PASSWORD="$(NEWS_ANALYZE_SFTP_PASSWORD)"
+          image.env.SFTP_PATH="$(NEWS_ANALYZE_SFTP_PATH)"
+          image.env.SFTP_HOST_KEY="$(NEWS_ANALYZE_SFTP_HOST_KEY)"
+
+      - name: "ProdDeployment"
+        displayName: "Deploy to Production"
+        dependsOn: [BuildAndPublishStage, DevDeployment]
+        # Solo desde ramas de release: main nunca llega a producción.
+        condition: and(succeeded(), eq('${{ parameters.Release_Prod }}', true), ne(variables['Build.Reason'], 'PullRequest'), or(startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), startsWith(variables['Build.SourceBranch'], 'refs/heads/releases/')))
+        environment: "Production"
+        namespace: "placebet"
+        azureSubscription: "$(AzureSubscription)"
+        azureResourceGroup: "$(AzureResourceGroup)"
+        kubernetesCluster: "$(KubernetesCluster)"
+        timeoutInMinutes: 3
+        valueFile: "deployment/values.prod.yml"
+        variableGroups:
+          - "Placebet.Prod"
+        overrideValues: |
+          replicaCount=2
+          image.env.MONGODB_URI="$(NEWS_ANALYZE_CONNECTION_STRING)"
+          image.env.JWT_SECRET_KEY="$(NEWS_ANALYZE_JWT_SECRET)"
+          image.env.HMAC_AUDIT_SECRET="$(NEWS_ANALYZE_HMAC_AUDIT_SECRET)"
+          image.env.REDIS_URL="redis://:$(NEWS_ANALYZE_REDIS_PASSWORD)@news-analyze-redis:6379/0"
+          image.env.SFTP_HOST="$(NEWS_ANALYZE_SFTP_HOST)"
+          image.env.SFTP_USER="$(NEWS_ANALYZE_SFTP_USER)"
+          image.env.SFTP_PASSWORD="$(NEWS_ANALYZE_SFTP_PASSWORD)"
+          image.env.SFTP_PATH="$(NEWS_ANALYZE_SFTP_PATH)"
+          image.env.SFTP_HOST_KEY="$(NEWS_ANALYZE_SFTP_HOST_KEY)"

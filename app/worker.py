@@ -7,6 +7,9 @@ Tareas:
   process_document  → extrae un documento (reintentos con espera exponencial 30 s / 2 min / 8 min)
   dispatch_outbox   → cada 5 s publica eventos PENDING (garantiza que un documento registrado siempre genera trabajo)
   reconcile_jobs    → cada 60 s devuelve a la cola los trabajos con concesión vencida
+  ingest_sftp       → cada SFTP_POLL_SECONDS toma los PDF nuevos del file server (si SFTP está configurado)
+
+En AKS el worker lleva el programador incluido (una sola réplica): celery -A app.worker worker -B
 """
 import asyncio
 import logging
@@ -29,6 +32,7 @@ celery_app.conf.update(
     beat_schedule={
         "dispatch-outbox": {"task": "app.worker.dispatch_outbox", "schedule": 5.0},
         "reconcile-jobs": {"task": "app.worker.reconcile_jobs", "schedule": 60.0},
+        "ingest-sftp": {"task": "app.worker.ingest_sftp", "schedule": float(_s.sftp_poll_seconds)},
     },
 )
 
@@ -103,3 +107,12 @@ def dispatch_outbox():
 def reconcile_jobs():
     from app.services.pipeline import reconcile_expired_jobs
     return _run(reconcile_expired_jobs)
+
+
+@celery_app.task(name="app.worker.ingest_sftp")
+def ingest_sftp():
+    from app import sftp
+    if not sftp.configured():
+        return {"disabled": True}
+    from app.agents.sftp_ingest import run_once
+    return _run(run_once)

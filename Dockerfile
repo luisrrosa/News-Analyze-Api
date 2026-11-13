@@ -16,12 +16,16 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY app ./app
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && chmod 755 /usr/local/bin/docker-entrypoint.sh
 
-# Usuario sin privilegios
-RUN useradd --create-home --uid 10001 api && chown -R api /app
-USER api
+# Usuario sin privilegios. En AKS escucha en PORT=80 (el runtime permite puertos bajos sin root).
+RUN groupadd --gid 10001 api && useradd --create-home --uid 10001 --gid 10001 api && chown -R api:api /app
+# UID numérico: el chart de AKS exige runAsNonRoot y solo puede verificarlo con un número.
+USER 10001:10001
 
-EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
+ENV APP_ROLE=api PORT=8000 STORAGE_BACKEND=memory
+EXPOSE 8000 80
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD [ "$APP_ROLE" != "api" ] || python -c "import os,urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\",\"8000\")}/healthz', timeout=3)" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

@@ -1,3 +1,4 @@
+import asyncio
 import io
 
 import pymupdf
@@ -12,7 +13,7 @@ from app.core.audit import write_audit
 from app.core.config import get_settings
 from app.core.db import get_db, iso_now
 from app.services.documents import Actor, DocumentRejected, receive_document
-from app.storage import get_storage
+from app.storage import read_original
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -108,7 +109,7 @@ async def get_document(document_id: str, ctx: AuthContext = Depends(require("doc
 @router.get("/{document_id}/download")
 async def download(document_id: str, ctx: AuthContext = Depends(require("documents:download"))):
     doc = await _get_document(document_id)
-    data = get_storage().get(doc["storage_key"])
+    data = await asyncio.to_thread(read_original, doc["storage_key"], doc["file_hash"])
     if data is None:
         raise ApiError(404, "El archivo original no está disponible")
     await write_audit(**ctx.actor(), action="PDF_DOWNLOAD_AUTHORIZED", entity_type="DOCUMENT", entity_id=document_id,
@@ -142,9 +143,10 @@ async def page_image(document_id: str, page: int = Path(ge=1, le=1000), news_id:
     doc = await _get_document(document_id)
     if page > (doc.get("page_count") or 0):
         raise ApiError(400, "Número de página inválido")
-    data = get_storage().get(doc["storage_key"])
+    data = await asyncio.to_thread(read_original, doc["storage_key"], doc["file_hash"])
     if data is None:
-        raise ApiError(404, "El archivo original no está disponible")
+        raise ApiError(404, "El original no está disponible: los PDF subidos desde una PC no se conservan; "
+                            "los del file server se leen de su ubicación (puede haberse movido o modificado).")
 
     highlight = None
     if news_id:

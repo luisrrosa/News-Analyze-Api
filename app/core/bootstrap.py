@@ -23,6 +23,7 @@ async def run_bootstrap(db: AsyncDatabase) -> None:
     await db["user_sessions"].create_index([("refresh_token_hash", ASCENDING)], sparse=True)
     await db["user_sessions"].create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
     await db["audit_logs"].create_index([("seq_num", ASCENDING)], unique=True)
+    await db["sftp_seen"].create_index([("path", ASCENDING)], unique=True)
     await db["audit_logs"].create_index([("timestamp_utc", DESCENDING)])
     await db["audit_logs"].create_index([("entity_type", ASCENDING), ("entity_id", ASCENDING)])
     await db["audit_logs"].create_index([("user_id", ASCENDING)])

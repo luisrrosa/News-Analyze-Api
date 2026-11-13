@@ -21,4 +21,6 @@ def document_out(d: dict, by_type: dict | None = None, by_media: dict | None = N
     out["items_by_type"] = by_type or {}
     out["items_by_media"] = by_media or {}
     out["multi_page_items"] = multi_page or 0
+    from app.storage import describe_source
+    out["original_source"] = describe_source(d.get("storage_key", ""))
     return out

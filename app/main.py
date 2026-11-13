@@ -77,6 +77,19 @@ def create_app() -> FastAPI:
         await db.get_db().command("ping")
         return {"status": "ok"}
 
+    # Sondas de Kubernetes (chart devops-template): vida = el proceso responde; listo = además llega a MongoDB.
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz():
+        return {"status": "ok"}
+
+    @app.get("/readyz", include_in_schema=False)
+    async def readyz():
+        try:
+            await db.get_db().command("ping")
+        except Exception:
+            return JSONResponse({"status": "unavailable"}, status_code=503)
+        return {"status": "ok"}
+
     for r in (auth.router, users.router, roles.router, audit.router, documents.router, news.router, reports.router, rules.router, catalogs.router, review.router, config.router):
         app.include_router(r, prefix="/api/v1")
     return app

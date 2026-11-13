@@ -4,6 +4,7 @@
 - Un ítem defectuoso no detiene el documento: el estado final es completed_with_warnings.
 - El estado del documento se deriva del trabajo; nunca se escribe a mano desde la interfaz.
 """
+import asyncio
 import logging
 import uuid
 from datetime import timedelta
@@ -16,7 +17,7 @@ from app.core.db import get_db, iso_now, utcnow
 from app.extraction.extractor import ExtractedItem, extract
 from app.extraction.ocr import OcrUnavailable
 from app.extraction.simhash import DUPLICATE_MAX, RELATED_MAX, SIMHASH_VERSION, from_hex, hamming, simhash64, to_hex
-from app.storage import get_storage
+from app.storage import read_original, release_upload
 
 log = logging.getLogger("pipeline")
 
@@ -107,9 +108,9 @@ async def process_job(job_id: str) -> str:
     await db["documents"].update_one({"id": document["id"]}, {"$set": {"status": "processing", "updated_at": iso_now()}})
 
     try:
-        data = get_storage().get(document["storage_key"])
+        data = await asyncio.to_thread(read_original, document["storage_key"], document["file_hash"])
         if data is None:
-            raise PermanentError("El archivo original no está en el almacenamiento")
+            raise PermanentError("El archivo original ya no está disponible (vencido, movido o modificado en el origen)")
         from app.services.catalogs import media_alias_map
         try:
             result = extract(data, await media_alias_map() or None)
@@ -198,6 +199,8 @@ async def process_job(job_id: str) -> str:
         }})
         await db["processing_jobs"].update_one({"id": job_id}, {"$set": {
             "status": "succeeded", "progress": 100, "finished_at": iso_now(), "lease_expires_at": None, "last_error": None}})
+        # El PDF subido no se conserva: su copia temporal en memoria se descarta al terminar.
+        release_upload(document["storage_key"], document["file_hash"])
         await write_audit(
             user_id=document["uploaded_by"], user_email="", user_roles=[], action="DOC_PARSE_COMPLETE",
             entity_type="DOCUMENT", entity_id=document["id"], status="SUCCESS",
@@ -222,6 +225,7 @@ async def _fail(job: dict, document: dict, message: str, permanent: bool) -> str
         "status": "dead" if dead else "retry", "last_error": message[:1000], "lease_expires_at": None,
         "finished_at": iso_now() if dead else None}})
     if dead:
+        release_upload(document.get("storage_key", ""), document.get("file_hash", ""))
         await db["documents"].update_one({"id": document["id"]}, {"$set": {
             "status": "failed", "error_summary": message[:500], "updated_at": iso_now()}})
         await write_audit(user_id=document["uploaded_by"], user_email="", user_roles=[], action="DOC_PARSE_FAILED",
