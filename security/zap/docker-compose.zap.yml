@@ -1,0 +1,61 @@
+# Entorno DESECHABLE para el escaneo de seguridad con OWASP ZAP (ver README.md de esta carpeta).
+# Todo vive en una red propia: MongoDB y Redis locales (sin Atlas, sin datos reales), sin SMTP ni SFTP reales.
+# Se crea con run-zap.sh y se destruye al terminar (docker compose down -v).
+name: news-analyze-zap
+
+x-api: &api
+  build: ../..
+  env_file: .env.zap                      # secretos aleatorios generados por run-zap.sh (no se versiona)
+  environment:
+    APP_ENV: development                  # publica /api/openapi.json para el escaneo de la API
+    MONGODB_URI: mongodb://mongo:27017
+    MONGODB_DB_NAME: news_analyze_zap
+    MONGODB_DNS_SERVERS: ""
+    STORAGE_BACKEND: memory
+    COOKIE_SECURE: "false"
+    TRUST_PROXY_HEADERS: "true"
+    ACCESS_TOKEN_EXPIRE_MINUTES: "180"    # el token no vence a mitad del escaneo
+    LOGIN_RATE_LIMIT: "100000"            # ZAP no se bloquea a sí mismo (solo en este entorno)
+    SFTP_HOST: ""
+  depends_on: [mongo, redis]
+
+services:
+  mongo:
+    image: mongo:7
+    tmpfs: [/data/db]                     # nada persiste
+  redis:
+    build: ../../deployment/redis
+    env_file: .env.zap
+  api:
+    <<: *api
+    environment:
+      APP_ENV: development
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DB_NAME: news_analyze_zap
+      MONGODB_DNS_SERVERS: ""
+      STORAGE_BACKEND: memory
+      COOKIE_SECURE: "false"
+      TRUST_PROXY_HEADERS: "true"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "180"
+      LOGIN_RATE_LIMIT: "100000"
+      SFTP_HOST: ""
+      APP_ROLE: api
+      PORT: "80"
+    ports: ["127.0.0.1:8130:80"]          # solo para el script de datos de prueba y la matriz por rol
+  worker:
+    <<: *api
+    command: ["worker"]
+  web:
+    build: ${WEB_REPO:-../../../newsAnalyze}
+    environment:
+      API_INTERNAL_URL: http://api
+    ports: ["127.0.0.1:3130:8080"]
+    depends_on: [api]
+  zap:
+    image: zaproxy/zap-stable
+    # Modo servicio: recibe el tráfico de Playwright como proxy y luego ejecuta el plan (plan.yaml).
+    command: ["zap.sh", "-daemon", "-host", "0.0.0.0", "-port", "8090",
+              "-config", "api.disablekey=true", "-config", "api.addrs.addr.name=.*", "-config", "api.addrs.addr.regex=true"]
+    volumes: ["./:/zap/wrk:rw"]
+    ports: ["127.0.0.1:8095:8090"]
+    depends_on: [web, api]

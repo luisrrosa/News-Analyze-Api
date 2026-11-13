@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request
 
+from app.api.schemas import RoleClaimsIn, body
 from app.api.deps import ApiError, AuthContext, require, require_any
 from app.core.audit import write_audit
 from app.core.rbac import ADMIN_LOCKED_CLAIMS, ALL_CLAIMS, PRIVILEGED_CLAIMS, SYSTEM_ROLES
@@ -16,7 +17,7 @@ async def get_roles(ctx: AuthContext = Depends(require_any("roles:manage", "user
             "can_grant_privileged": "admin" in (ctx.user.get("roles") or [])}
 
 
-@router.post("")
+@router.post("", openapi_extra=body(RoleClaimsIn))
 async def set_role_claims(request: Request, ctx: AuthContext = Depends(require("roles:manage"))):
     try:
         body = await request.json()

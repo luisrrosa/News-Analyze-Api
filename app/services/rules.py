@@ -222,6 +222,8 @@ async def save_topic(code: str | None, data: dict, user_id: str) -> dict:
 
 
 def validate_triage(cfg: dict) -> dict:
+    if not isinstance(cfg, dict):
+        raise RuleError("Configuración de triage inválida")
     factors = cfg.get("factors")
     levels = cfg.get("levels")
     if not isinstance(factors, list) or not factors:
@@ -229,6 +231,8 @@ def validate_triage(cfg: dict) -> dict:
     codes, total = set(), 0.0
     clean_f = []
     for f in factors:
+        if not isinstance(f, dict):   # OWASP ZAP: un factor que no es objeto daba error 500
+            raise RuleError("Cada factor debe ser un objeto con código, nombre y peso")
         code = _slug(str(f.get("code") or f.get("name") or ""))
         name = str(f.get("name", "")).strip()
         try:
@@ -240,10 +244,16 @@ def validate_triage(cfg: dict) -> dict:
         if not 0 <= weight <= 100:
             raise RuleError(f"El peso de «{name}» debe estar entre 0 y 100")
         dims = []
-        for d in f.get("source_dimensions") or []:
-            if d.get("dimension") not in DIMENSIONS:
+        source = f.get("source_dimensions") or []
+        if not isinstance(source, list):
+            raise RuleError(f"Dimensiones de origen inválidas en «{name}»")
+        for d in source:
+            if not isinstance(d, dict) or d.get("dimension") not in DIMENSIONS:
                 raise RuleError(f"Dimensión desconocida en «{name}»")
-            dims.append({"dimension": d["dimension"], "weight": round(float(d.get("weight", 0)), 4)})
+            try:
+                dims.append({"dimension": d["dimension"], "weight": round(float(d.get("weight", 0)), 4)})
+            except (TypeError, ValueError):
+                raise RuleError(f"Peso de dimensión inválido en «{name}»")
         if dims and abs(sum(d["weight"] for d in dims) - 1) > 0.001:
             raise RuleError(f"Las dimensiones de origen de «{name}» deben sumar 1")
         codes.add(code)
@@ -253,6 +263,12 @@ def validate_triage(cfg: dict) -> dict:
         raise RuleError(f"Los pesos deben sumar 100 % (suman {total:g} %)")
     if not isinstance(levels, list) or not levels:
         raise RuleError("Debe haber niveles de triage")
+    if not all(isinstance(l, dict) for l in levels):
+        raise RuleError("Cada nivel debe ser un objeto con nombre y umbral")
+    try:
+        _ = [float(l.get("min_score", -1)) for l in levels]
+    except (TypeError, ValueError):
+        raise RuleError("Los umbrales de los niveles deben ser números")
     clean_l = sorted(({"code": _slug(str(l.get("code") or l.get("name"))), "name": str(l.get("name", "")).strip(),
                        "min_score": float(l.get("min_score", -1))} for l in levels), key=lambda l: -l["min_score"])
     scores = [l["min_score"] for l in clean_l]
@@ -261,13 +277,22 @@ def validate_triage(cfg: dict) -> dict:
     mode = cfg.get("mode", "simulation")
     if mode not in ("simulation", "active"):
         raise RuleError("Modo de triage inválido")
-    criteria = [str(c).strip()[:200] for c in (cfg.get("exceptional_criteria") or []) if str(c).strip()]
+    raw_criteria = cfg.get("exceptional_criteria") or []
+    if not isinstance(raw_criteria, list):
+        raise RuleError("Los criterios excepcionales deben ser una lista")
+    criteria = [str(c).strip()[:200] for c in raw_criteria if str(c).strip()]
+    try:
+        min_factors = max(1, min(len(clean_f), int(cfg.get("min_applicable_factors", 4))))
+        max_gap = float(cfg.get("coherence_max_gap", 2))
+        confidence = max(0.0, min(1.0, float(cfg.get("review_confidence_below", 0.65))))
+    except (TypeError, ValueError):
+        raise RuleError("Los parámetros numéricos del triage deben ser números")
     return {
         "mode": mode, "scale": "1-5",
-        "min_applicable_factors": max(1, min(len(clean_f), int(cfg.get("min_applicable_factors", 4)))),
+        "min_applicable_factors": min_factors,
         "factors": clean_f, "levels": clean_l,
-        "coherence_max_gap": float(cfg.get("coherence_max_gap", 2)),
-        "review_confidence_below": max(0.0, min(1.0, float(cfg.get("review_confidence_below", 0.65)))),
+        "coherence_max_gap": max_gap,
+        "review_confidence_below": confidence,
         "exceptional_criteria": criteria,
     }
 

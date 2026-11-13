@@ -1,0 +1,5 @@
+.env.zap
+roles.json
+e2e.env
+plan.generated.yaml
+reports/

@@ -4,6 +4,7 @@ Solo se guardan campos no secretos: las credenciales reales irán a Azure Key Va
 """
 from fastapi import APIRouter, Depends, Request
 
+from app.api.schemas import ConfigIn, body
 from app.api.deps import ApiError, AuthContext, check_claim, require
 from app.core.audit import write_audit
 from app.core.db import get_db, iso_now
@@ -63,7 +64,7 @@ async def get_config(ctx: AuthContext = Depends(require("config:read"))):
     return await load()
 
 
-@router.post("")
+@router.post("", openapi_extra=body(ConfigIn))
 async def post_config(request: Request, ctx: AuthContext = Depends(require("config:read"))):
     try:
         body = await request.json()

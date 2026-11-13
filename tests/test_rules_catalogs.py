@@ -141,3 +141,22 @@ async def test_officeholders(roles):
     assert r.status_code == 400
     assert (await holder_on("cargo de prueba", "2022-05-01"))["person_name"] == "Persona Uno"
     assert (await holder_on("Cargo de Prueba", "2026-10-05"))["person_name"] == "Persona Dos"
+
+
+async def test_triage_rejects_malformed_bodies(roles):
+    """OWASP ZAP encontró 500 con factores que no eran objetos: ahora todo cuerpo mal formado da 400."""
+    admin = roles["admin"]
+    if not (await admin.get("/api/v1/rules")).json().get("draft"):
+        await admin.post("/api/v1/rules/draft", json={"notes": "zap"})
+    bad = [
+        {"factors": [1, 2], "levels": [3]},
+        {"factors": ["x"], "levels": []},
+        {"factors": [{"code": "a", "name": "A", "weight": 100, "source_dimensions": "x"}], "levels": [{"name": "B", "min_score": 0}]},
+        {"factors": [{"code": "a", "name": "A", "weight": 100}], "levels": ["x"]},
+        {"factors": [{"code": "a", "name": "A", "weight": 100}], "levels": [{"name": "B", "min_score": "x"}]},
+        {"factors": [{"code": "a", "name": "A", "weight": 100}], "levels": [{"name": "B", "min_score": 0}], "min_applicable_factors": "x"},
+        {"factors": [{"code": "a", "name": "A", "weight": 100}], "levels": [{"name": "B", "min_score": 0}], "exceptional_criteria": "x"},
+    ]
+    for body in bad:
+        r = await admin.put("/api/v1/rules/draft/triage", json=body)
+        assert r.status_code == 400, (body, r.status_code, r.text)

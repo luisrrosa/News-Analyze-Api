@@ -1,0 +1,64 @@
+# Escaneo de seguridad nocturno de NEWS ANALYZE con OWASP ZAP, en un entorno DESECHABLE dentro del agente.
+# No toca desarrollo ni producción: levanta MongoDB, Redis, API, worker y web en Docker, escanea y los destruye.
+#
+# Crear una vez: Pipelines → New pipeline → Azure Repos Git → NewsAnalyze.Api → Existing YAML →
+# /security/zap/azure-pipelines-zap.yml. Necesita acceso al repo NewsAnalyze.Web. Opcional: el secure file del PDF
+# de referencia (variable REFERENCE_PDF_SECURE_FILE, el mismo del CI) para que haya datos que escanear.
+
+trigger: none
+pr: none
+
+schedules:
+  - cron: "0 7 * * *"          # 03:00 en Santo Domingo (UTC-4)
+    displayName: Escaneo nocturno
+    branches:
+      include: [main]
+    always: true
+
+resources:
+  repositories:
+    - repository: web
+      type: git
+      name: "NewsAnalyze.Web"
+      ref: refs/heads/main
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+  - job: zap
+    displayName: OWASP ZAP + matriz de autorización
+    timeoutInMinutes: 120
+    steps:
+      - checkout: self
+        path: s/NewsAnalyze.Api
+      - checkout: web
+        path: s/newsAnalyze
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: "3.12"
+      - task: NodeTool@0
+        inputs:
+          versionSpec: "20.x"
+      - task: DownloadSecureFile@1
+        name: referencePdf
+        condition: ne(variables['REFERENCE_PDF_SECURE_FILE'], '')
+        inputs:
+          secureFile: $(REFERENCE_PDF_SECURE_FILE)
+      - script: |
+          python -m pip install -q -r requirements.txt
+          cd ../newsAnalyze && npm ci --no-audit --no-fund && npx playwright install --with-deps chromium
+        workingDirectory: $(Pipeline.Workspace)/s/NewsAnalyze.Api
+        displayName: Dependencias
+      - script: |
+          if [ -f "$SECURE_PDF_PATH" ]; then export REFERENCE_PDF="$SECURE_PDF_PATH"; fi
+          PYTHON=python WEB_REPO="$(Pipeline.Workspace)/s/newsAnalyze" bash security/zap/run-zap.sh
+        workingDirectory: $(Pipeline.Workspace)/s/NewsAnalyze.Api
+        displayName: Escaneo (entorno desechable)
+        env:
+          SECURE_PDF_PATH: $(referencePdf.secureFilePath)
+      - task: PublishPipelineArtifact@1
+        condition: always()
+        inputs:
+          targetPath: $(Pipeline.Workspace)/s/NewsAnalyze.Api/security/zap/reports
+          artifact: zap-reportes

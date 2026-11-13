@@ -4,6 +4,7 @@ import secrets
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
+from app.api.schemas import ChangePasswordIn, LoginIn, body
 from app.api.deps import ApiError, AuthContext, RequestMeta, request_meta, require
 from app.core.audit import write_audit
 from app.core.config import get_settings
@@ -57,7 +58,7 @@ async def _session_payload(user: dict, session_id: str) -> dict:
     }
 
 
-@router.post("/login")
+@router.post("/login", openapi_extra=body(LoginIn))
 async def login(request: Request, response: Response, meta: RequestMeta = Depends(request_meta)):
     s = get_settings()
     allowed, retry = await hit(f"login:{meta.ip_address}", s.login_rate_limit, s.login_rate_window_seconds)
@@ -176,7 +177,7 @@ async def logout(response: Response, ctx: AuthContext = Depends(require(allow_pa
     return {"success": True}
 
 
-@router.post("/change-password")
+@router.post("/change-password", openapi_extra=body(ChangePasswordIn))
 async def change_password(request: Request, ctx: AuthContext = Depends(require(allow_password_change_pending=True))):
     body = await request.json()
     current = body.get("current_password") if isinstance(body, dict) else None

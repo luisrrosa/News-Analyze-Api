@@ -1,0 +1,76 @@
+# Plan del Automation Framework de OWASP ZAP. run-zap.sh lo copia a plan.generated.yaml reemplazando
+# __ADMIN_TOKEN__ (token de un administrador de PRUEBA del entorno desechable).
+env:
+  contexts:
+    - name: news-analyze
+      urls:
+        - http://web:8080
+        - http://api
+      includePaths:
+        - "http://web:8080.*"
+        - "http://api.*"
+      excludePaths:
+        # No se atacan: cerrarían la sesión del escáner o cambiarían su clave a mitad del escaneo.
+        - ".*/api/v1/auth/logout.*"
+        - ".*/api/v1/auth/change-password.*"
+        - ".*/api/v1/auth/refresh.*"
+        - ".*/_next/static/.*"
+        - ".*/brand/.*"
+  parameters:
+    failOnError: false
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  # Sesión de administrador en todas las peticiones del escaneo (la API usa Authorization: Bearer).
+  - type: replacer
+    parameters:
+      deleteAllRules: true
+    rules:
+      - description: token de prueba
+        url: ".*"
+        matchType: req_header
+        matchString: Authorization
+        matchRegex: false
+        replacementString: "Bearer __ADMIN_TOKEN__"
+
+  # Contrato de la API: todos los endpoints con sus cuerpos de ejemplo (app/api/schemas.py).
+  - type: openapi
+    parameters:
+      apiUrl: http://api/api/openapi.json
+      targetUrl: http://api
+
+  # Recorrido con navegador de la parte pública (sin sesión: inicio de sesión y 404).
+  - type: spiderAjax
+    parameters:
+      context: news-analyze
+      url: http://web:8080/
+      maxDuration: 3
+      browserId: firefox-headless
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 10
+
+  # Ataque sobre todo lo conocido: el contrato OpenAPI y el tráfico real que dejó Playwright a través del proxy.
+  - type: activeScan
+    parameters:
+      context: news-analyze
+      maxScanDurationInMins: 40
+      maxRuleDurationInMins: 5
+      threadPerHost: 4
+    policyDefinition:
+      defaultStrength: medium
+      defaultThreshold: medium
+
+  - type: report
+    parameters:
+      template: traditional-html
+      reportDir: /zap/wrk/reports
+      reportFile: zap-reporte
+      reportTitle: NEWS ANALYZE - escaneo completo (entorno desechable)
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /zap/wrk/reports
+      reportFile: zap-reporte

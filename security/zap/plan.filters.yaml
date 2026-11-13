@@ -1,0 +1,46 @@
+# Filtros de alertas ya revisadas. run-zap.sh los instala ANTES de pasar el tráfico de Playwright
+# (ZAP solo filtra las alertas que se generan después de instalarlos).
+env:
+  contexts:
+    - name: news-analyze
+      urls:
+        - http://web:8080
+        - http://api
+      includePaths:
+        - "http://web:8080.*"
+        - "http://api.*"
+      excludePaths:
+        # No se atacan: cerrarían la sesión del escáner o cambiarían su clave a mitad del escaneo.
+        - ".*/api/v1/auth/logout.*"
+        - ".*/api/v1/auth/change-password.*"
+        - ".*/api/v1/auth/refresh.*"
+        - ".*/_next/static/.*"
+        - ".*/brand/.*"
+  parameters:
+    failOnError: false
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  # Avisos ya revisados y aceptados (no son vulnerabilidades): no deben tapar lo nuevo.
+  - type: alertFilter
+    alertFilters:
+      - ruleId: 10049      # Non-Storable Content: no-store es intencional
+        newRisk: Info
+      - ruleId: 10109      # Modern Web Application: informativo
+        newRisk: Info
+      # Propias de este entorno o intencionales (revisadas en la ejecución del 2026-11-13):
+      - ruleId: 10106      # HTTP Only Site: el entorno desechable no tiene TLS; en AKS el ingress usa HTTPS y HSTS
+        newRisk: Info
+      - ruleId: 10010      # Cookie sin HttpOnly: na_csrf DEBE leerse desde JS (CSRF de doble envío); na_refresh sí es HttpOnly
+        parameter: na_csrf
+        newRisk: Info
+      - ruleId: 2          # IP privada en la auditoría: el libro registra la IP de cada acción (es su propósito)
+        url: ".*/api/v1/audit/logs.*"
+        urlRegex: true
+        newRisk: Info
+      - ruleId: 40014      # "XSS persistente en JSON": la auditoría guarda lo que se envió y lo devuelve como
+        urlRegex: true
+        url: ".*/api/v1/audit/logs.*"   # application/json con nosniff; la interfaz lo muestra escapado (React)
+        newRisk: False Positive
+

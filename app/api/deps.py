@@ -129,6 +129,7 @@ def require(*required_claims: str, allow_password_change_pending: bool = False):
             raise ApiError(403, f"Acceso denegado: se requiere el permiso [{', '.join(missing)}]", "FORBIDDEN")
         return ctx
 
+    dependency.required_claims = ("all", tuple(required_claims))  # para la matriz de autorización
     return dependency
 
 
@@ -148,6 +149,7 @@ def require_any(*any_claims: str):
             raise ApiError(403, f"Acceso denegado: se requiere alguno de los permisos [{', '.join(any_claims)}]", "FORBIDDEN")
         return ctx
 
+    dependency.required_claims = ("any", tuple(any_claims))
     return dependency
 
 

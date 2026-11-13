@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from PIL import Image, ImageDraw, ImageFont
 
+from app.api.schemas import multipart_file
 from app.api.compat import document_out, news_out
 from app.api.dates import summary_date_filter
 from app.api.deps import ApiError, AuthContext, require, require_any
@@ -84,7 +85,7 @@ async def processing_status(ctx: AuthContext = Depends(require_any("documents:re
     return {"pending": pending, "last_update": (last or {}).get("updated_at")}
 
 
-@router.post("/upload", status_code=202)
+@router.post("/upload", status_code=202, openapi_extra=multipart_file())
 async def upload(request: Request, ctx: AuthContext = Depends(require("documents:upload"))):
     # Sin parámetro File(): así el cuerpo NO se lee antes de validar la sesión y el permiso.
     # El tamaño total ya lo limita BodyLimitMiddleware; aquí, un solo archivo y su tamaño máximo.

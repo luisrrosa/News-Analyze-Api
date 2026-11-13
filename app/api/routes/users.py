@@ -4,6 +4,7 @@ import secrets
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from app.api.schemas import UserCreateIn, UserUpdateIn, body
 from app.api.deps import ApiError, AuthContext, check_claim, require
 from app.core.audit import write_audit
 from app.core.passwords import password_policy_error
@@ -33,7 +34,7 @@ async def list_users(ctx: AuthContext = Depends(require("users:read"))):
     return {"users": await users.list_users()}
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, openapi_extra=body(UserCreateIn))
 async def create_user(request: Request, ctx: AuthContext = Depends(require("users:create"))):
     body = await _json(request)
     name, email, roles, password = body.get("name"), body.get("email"), body.get("roles"), body.get("password")
@@ -63,7 +64,7 @@ async def get_user(user_id: str, ctx: AuthContext = Depends(require("users:read"
     return {"user": users.public_user(user)}
 
 
-@router.put("/{user_id}")
+@router.put("/{user_id}", openapi_extra=body(UserUpdateIn))
 async def update_user(user_id: str, request: Request, ctx: AuthContext = Depends(require("users:read"))):
     body = await _json(request)
     name, roles, status = body.get("name"), body.get("roles"), body.get("status")

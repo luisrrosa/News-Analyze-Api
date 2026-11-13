@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request
 
+from app.api.schemas import ApproveRulesIn, DraftIn, NotesIn, TopicIn, TriageIn, body
 from app.api.deps import ApiError, AuthContext, require, require_any
 from app.core.audit import write_audit
 import asyncio
@@ -51,7 +52,7 @@ async def version_detail(version: str, ctx: AuthContext = Depends(require("catal
     return {"rule_set": rs}
 
 
-@router.post("/draft")
+@router.post("/draft", openapi_extra=body(DraftIn))
 async def new_draft(request: Request, ctx: AuthContext = Depends(require("rules:draft_manage"))):
     body = await _body(request)
     try:
@@ -74,7 +75,7 @@ async def delete_draft(ctx: AuthContext = Depends(require("rules:draft_manage"))
     return {"success": True}
 
 
-@router.put("/draft/notes")
+@router.put("/draft/notes", openapi_extra=body(NotesIn))
 async def draft_notes(request: Request, ctx: AuthContext = Depends(require("rules:draft_manage"))):
     try:
         draft = await rules.update_notes(str((await _body(request)).get("notes", "")), ctx.user["id"])
@@ -83,7 +84,7 @@ async def draft_notes(request: Request, ctx: AuthContext = Depends(require("rule
     return {"draft": draft}
 
 
-@router.post("/draft/topics")
+@router.post("/draft/topics", openapi_extra=body(TopicIn))
 async def add_topic(request: Request, ctx: AuthContext = Depends(require("topics:manage"))):
     data = await _body(request)
     try:
@@ -96,7 +97,7 @@ async def add_topic(request: Request, ctx: AuthContext = Depends(require("topics
     return {"draft": draft}
 
 
-@router.put("/draft/topics/{code}")
+@router.put("/draft/topics/{code}", openapi_extra=body(TopicIn))
 async def edit_topic(code: str, request: Request, ctx: AuthContext = Depends(require("topics:manage"))):
     data = await _body(request)
     before = next((t for t in ((await rules.get_draft()) or {}).get("topics", []) if t["code"] == code), None)
@@ -111,7 +112,7 @@ async def edit_topic(code: str, request: Request, ctx: AuthContext = Depends(req
     return {"draft": draft}
 
 
-@router.put("/draft/triage")
+@router.put("/draft/triage", openapi_extra=body(TriageIn))
 async def edit_triage(request: Request, ctx: AuthContext = Depends(require("triage:calibrate"))):
     before = ((await rules.get_draft()) or {}).get("triage")
     try:
@@ -123,7 +124,7 @@ async def edit_triage(request: Request, ctx: AuthContext = Depends(require("tria
     return {"draft": draft}
 
 
-@router.post("/draft/approve")
+@router.post("/draft/approve", openapi_extra=body(ApproveRulesIn))
 async def approve(request: Request, ctx: AuthContext = Depends(require("rules:approve"))):
     try:
         body = await request.json()

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Query, Request
 
+from app.api.schemas import JustificationIn, NoteIn, ProposeIn, SamplingIn, body
 from app.api.compat import news_out
 from app.api.dates import summary_date_filter
 from app.api.deps import ApiError, AuthContext, require
@@ -47,11 +48,15 @@ async def get_settings_(ctx: AuthContext = Depends(require("news:review"))):
     return {"sampling_rate": await rv.sampling_rate(), "lock_minutes": rv.LOCK_MINUTES}
 
 
-@router.put("/settings")
+@router.put("/settings", openapi_extra=body(SamplingIn))
 async def put_settings(request: Request, ctx: AuthContext = Depends(require("review:sampling_manage"))):
     body = await _body(request)
     try:
-        before, after = await rv.set_sampling_rate(float(body.get("sampling_rate")), ctx.user["id"])
+        try:
+            rate = float(body.get("sampling_rate"))
+        except (TypeError, ValueError):
+            raise ApiError(400, "sampling_rate debe ser un número entre 0 y 1", "VALIDATION_ERROR")
+        before, after = await rv.set_sampling_rate(rate, ctx.user["id"])
     except (TypeError, ValueError):
         raise ApiError(400, "Tasa de muestreo inválida")
     except rv.ReviewError as e:
@@ -86,7 +91,7 @@ async def release(news_id: str, ctx: AuthContext = Depends(require("news:review"
     return {"success": True}
 
 
-@router.post("/news/{news_id}/propose")
+@router.post("/news/{news_id}/propose", openapi_extra=body(ProposeIn))
 async def propose(news_id: str, request: Request, ctx: AuthContext = Depends(require("news:review"))):
     body = await _body(request)
     try:
@@ -99,7 +104,7 @@ async def propose(news_id: str, request: Request, ctx: AuthContext = Depends(req
     return {"review": r}
 
 
-@router.post("/news/{news_id}/confirm")
+@router.post("/news/{news_id}/confirm", openapi_extra=body(JustificationIn))
 async def confirm(news_id: str, request: Request, ctx: AuthContext = Depends(require("news:review"))):
     """La extracción es correcta: se aprueba sin cambios."""
     try:
@@ -111,7 +116,7 @@ async def confirm(news_id: str, request: Request, ctx: AuthContext = Depends(req
     return {"review": r}
 
 
-@router.post("/news/{news_id}/reject")
+@router.post("/news/{news_id}/reject", openapi_extra=body(JustificationIn))
 async def reject(news_id: str, request: Request, ctx: AuthContext = Depends(require("news:review", "review:reject"))):
     """La pieza no es válida (fragmento, cabecera, repetida…). Se conserva, marcada como rechazada."""
     try:
@@ -123,7 +128,7 @@ async def reject(news_id: str, request: Request, ctx: AuthContext = Depends(requ
     return {"review": r}
 
 
-@router.post("/corrections/{review_id}/approve")
+@router.post("/corrections/{review_id}/approve", openapi_extra=body(NoteIn))
 async def approve(review_id: str, request: Request, ctx: AuthContext = Depends(require("news:approve"))):
     try:
         r, before = await rv.approve(review_id, ctx.user, str((await _body(request)).get("note", "")))
@@ -135,7 +140,7 @@ async def approve(review_id: str, request: Request, ctx: AuthContext = Depends(r
     return {"success": True}
 
 
-@router.post("/corrections/{review_id}/return")
+@router.post("/corrections/{review_id}/return", openapi_extra=body(NoteIn))
 async def return_(review_id: str, request: Request, ctx: AuthContext = Depends(require("news:approve"))):
     try:
         r = await rv.return_proposal(review_id, ctx.user, str((await _body(request)).get("note", "")))
