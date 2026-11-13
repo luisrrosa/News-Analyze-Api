@@ -26,6 +26,9 @@ def normalize_for_hash(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+_BITS = [tuple(b for b in range(8) if v >> b & 1) for v in range(256)]
+
+
 def simhash64(text: str) -> int:
     norm = normalize_for_hash(text)
     if len(norm) < 5:
@@ -34,15 +37,25 @@ def simhash64(text: str) -> int:
     for i in range(len(norm) - 4):
         g = norm[i:i + 5]
         weights[g] = weights.get(g, 0) + 1
-    v = [0] * 64
+    # Suma por byte en lugar de por bit (8 operaciones por rasgo en vez de 64); el resultado es idéntico:
+    # v[bit] = Σ w (bit=1) − Σ w (bit=0) = 2·S[bit] − W.
+    tables = [[0] * 256 for _ in range(8)]
+    total = 0
     for gram, w in weights.items():
-        h = int.from_bytes(hashlib.blake2b(gram.encode("utf-8"), digest_size=8).digest(), "big")
-        for bit in range(64):
-            v[bit] += w if (h >> bit) & 1 else -w
+        digest = hashlib.blake2b(gram.encode("utf-8"), digest_size=8).digest()
+        total += w
+        for pos in range(8):
+            tables[pos][digest[7 - pos]] += w  # pos 0 = byte menos significativo (bits 0–7)
     out = 0
-    for bit in range(64):
-        if v[bit] > 0:
-            out |= 1 << bit
+    for pos, table in enumerate(tables):
+        s_bits = [0] * 8
+        for value, c in enumerate(table):
+            if c:
+                for b in _BITS[value]:
+                    s_bits[b] += c
+        for b in range(8):
+            if 2 * s_bits[b] - total > 0:
+                out |= 1 << (pos * 8 + b)
     return out
 
 
