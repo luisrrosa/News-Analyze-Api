@@ -37,7 +37,7 @@ async def recompute_news_topics(batch: int = 500) -> int:
     col = get_db()["news"]
     ops, n = [], 0
     from pymongo import UpdateOne
-    async for d in col.find({}, projection={"id": 1, "title": 1, "body": 1}):
+    async for d in col.find({"topics_manual": {"$ne": True}}, projection={"id": 1, "title": 1, "body": 1}):
         ops.append(UpdateOne({"id": d["id"]}, {"$set": {
             "provisional_topics": match_topics(d.get("title", ""), d.get("body", ""), patterns),
             "provisional_topics_version": version}}))

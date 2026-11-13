@@ -123,6 +123,9 @@ async def process_job(job_id: str) -> str:
         rule_set, _ = await get_effective()
         topic_patterns = compile_patterns(rule_set)
 
+        from app.services.review import apply_sampling, sampling_rate
+        sample_rate = await sampling_rate()
+
         recent = await _recent_hashes(document["id"])
         seen: list[tuple[str, int]] = []
         operations, duplicates, item_errors, flagged = [], 0, [], 0
@@ -148,6 +151,7 @@ async def process_job(job_id: str) -> str:
                 }
                 news_id = f"news_{uuid.uuid4()}"
                 doc = _news_doc(item, {**document, "summary_date": summary_date}, news_id, to_hex(h), dedupe, now)
+                doc["review_status"], doc["review_reasons"] = apply_sampling(doc["review_status"], doc["review_reasons"], sample_rate)
                 doc["provisional_topics"] = match_topics(item.title, item.body, topic_patterns)
                 doc["provisional_topics_version"] = (rule_set or {}).get("version")
                 if summary_date_inferred:

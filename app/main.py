@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.deps import ApiError
-from app.api.routes import audit, auth, catalogs, documents, news, reports, roles, rules, users
+from app.api.routes import audit, auth, catalogs, documents, news, reports, review, roles, rules, users
 from app.core import db
 from app.core.bootstrap import run_bootstrap
 from app.core.config import get_settings
@@ -77,7 +77,7 @@ def create_app() -> FastAPI:
         await db.get_db().command("ping")
         return {"status": "ok"}
 
-    for r in (auth.router, users.router, roles.router, audit.router, documents.router, news.router, reports.router, rules.router, catalogs.router):
+    for r in (auth.router, users.router, roles.router, audit.router, documents.router, news.router, reports.router, rules.router, catalogs.router, review.router):
         app.include_router(r, prefix="/api/v1")
     return app
 
