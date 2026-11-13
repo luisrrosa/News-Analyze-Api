@@ -3,7 +3,9 @@ import re
 from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.compat import news_out
+from app.api.dates import summary_date_filter
 from app.api.deps import ApiError, AuthContext, require
+from app.services.stats import period_stats, summary_dates
 from app.core.audit import write_audit
 from app.core.db import get_db, iso_now
 
@@ -16,9 +18,10 @@ async def list_news(
     medio: str | None = None, type: str | None = None, destaque: str | None = None,
     q: str | None = Query(None, max_length=200), is_duplicate: bool | None = None,
     document_id: str | None = None, review_status: str | None = None,
+    date_from: str | None = None, date_to: str | None = None,
     ctx: AuthContext = Depends(require("news:read")),
 ):
-    query: dict = {}
+    query: dict = summary_date_filter(date_from, date_to)
     if medio and medio != "all":
         query["media_name"] = medio
     if type and type != "all":
@@ -36,9 +39,23 @@ async def list_news(
         query["$or"] = [{"title": rx}, {"body": rx}, {"author_raw": rx}, {"article_section": rx}]
     col = get_db()["news"]
     total = await col.count_documents(query)
-    items = [news_out(n) async for n in col.find(query).sort([("created_at", -1), ("news_index", 1)])
+    items = [news_out(n) async for n in col.find(query).sort([("summary_date", -1), ("document_id", 1), ("news_index", 1)])
              .skip((page - 1) * limit).limit(limit)]
     return {"items": items, "total": total, "page": page, "limit": limit, "totalPages": -(-total // limit)}
+
+
+@router.get("/news/summary-dates")
+async def list_summary_dates(ctx: AuthContext = Depends(require("news:read"))):
+    """Días con datos (para el rango por defecto: último día con datos)."""
+    rows = await summary_dates()
+    return {"dates": rows, "latest": rows[0]["date"] if rows else None}
+
+
+@router.get("/news/stats")
+async def news_stats(date_from: str | None = None, date_to: str | None = None,
+                     ctx: AuthContext = Depends(require("news:read"))):
+    f = summary_date_filter(date_from, date_to)
+    return {"date_from": date_from, "date_to": date_to, **await period_stats(f, f)}
 
 
 @router.get("/news/{news_id}")
@@ -52,9 +69,10 @@ async def get_news(news_id: str, ctx: AuthContext = Depends(require("news:read")
 # ---------------- Mesa de revisión (capa determinista) ----------------
 
 @router.get("/review/queue")
-async def review_queue(limit: int = Query(200, ge=1, le=500), ctx: AuthContext = Depends(require("news:review"))):
+async def review_queue(limit: int = Query(200, ge=1, le=500), date_from: str | None = None, date_to: str | None = None,
+                       ctx: AuthContext = Depends(require("news:review"))):
     col = get_db()["news"]
-    query = {"review_status": "pending_review"}
+    query = {"review_status": "pending_review", **summary_date_filter(date_from, date_to)}
     items = [news_out(n) async for n in col.find(query).sort("created_at", -1).limit(limit)]
     for i in items:
         i["review_decision"] = None

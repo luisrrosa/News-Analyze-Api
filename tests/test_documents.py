@@ -179,3 +179,39 @@ async def test_folder_ingest_ignores_symlinks(roles):
     result = await run_once(wait_seconds=0.2)
     assert "enlace.pdf" in result["symlinks_ignored"] and link.is_symlink()
     link.unlink()
+
+
+async def test_date_filters_and_stats(roles, reference_doc):
+    c = roles["consulta"]
+    r = await c.get("/api/v1/news/summary-dates")
+    assert "2026-10-05" in [d["date"] for d in r.json()["dates"]]
+    r = await c.get("/api/v1/news?date_from=2026-10-05&date_to=2026-10-05&limit=1")
+    assert r.json()["total"] >= 156
+    r = await c.get("/api/v1/news?date_from=2020-01-01&date_to=2020-01-02")
+    assert r.json()["total"] == 0
+    r = await c.get("/api/v1/news?date_from=2026-10-06&date_to=2026-10-01")
+    assert r.status_code == 400 and r.json()["code"] == "INVALID_DATE_RANGE"
+    r = await c.get("/api/v1/news/stats?date_from=2026-10-05&date_to=2026-10-05")
+    s = r.json()
+    assert s["total_news"] >= 156 and s["by_type"]["Noticia"] >= 118 and s["multi_page"] >= 32 and s["related"] >= 1
+    r = await c.get("/api/v1/documents?date_from=2020-01-01&date_to=2020-01-02")
+    assert all(d["status"] in ("queued", "processing") for d in r.json()["documents"])
+    r = await roles["auditor"].get("/api/v1/audit/logs?date_from=2020-01-01&date_to=2020-01-02")
+    assert r.json()["total"] == 0
+
+
+async def test_presidential_report_pdf(roles, reference_doc):
+    assert (await roles["consulta"].get("/api/v1/reports/presidential")).status_code == 403
+    r = await roles["editor"].get("/api/v1/reports/presidential?date_from=2026-10-05&date_to=2026-10-05")
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    doc = pymupdf.open(stream=r.content, filetype="pdf")
+    text = "".join(p.get_text() for p in doc)
+    assert doc.page_count >= 2
+    assert "Reporte Presidencial de Prensa" in text and "5 de octubre de 2026" in text
+    assert "Resumen ejecutivo en cifras" in text and "Titulares de mayor destaque" in text
+    assert "Distribuciones" in text and "Cobertura compartida" in text
+    assert "BANRESERVAS" in text  # par relacionado del corpus
+    assert f"Página 1 de {doc.page_count}" in text
+    doc.close()
+    r = await roles["admin"].get("/api/v1/audit/logs?limit=50")
+    assert any(l["action"] == "REPORT_EXPORTED" for l in r.json()["logs"])

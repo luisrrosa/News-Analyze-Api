@@ -33,7 +33,8 @@ async def test_claims_resolved_from_roles(sessions):
     claims = {r: set(s.user["claims"]) for r, s in sessions.items()}
     assert "users:manage" in claims["admin"]
     assert "documents:download" in claims["editor"] and "config:read" not in claims["editor"]
-    assert claims["consulta"] == {"dashboard:read", "news:read", "documents:read"}
+    assert claims["consulta"] == {"dashboard:read", "news:read", "documents:read", "reports:read"}
+    assert "reports:export" in claims["editor"] and "reports:export" not in claims["consulta"]
     assert "audit:read" in claims["auditor"] and "documents:download" not in claims["auditor"]
 
 

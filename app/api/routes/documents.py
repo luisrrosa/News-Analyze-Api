@@ -6,6 +6,7 @@ from fastapi.responses import Response
 from PIL import Image, ImageDraw, ImageFont
 
 from app.api.compat import document_out, news_out
+from app.api.dates import summary_date_filter
 from app.api.deps import ApiError, AuthContext, require
 from app.core.audit import write_audit
 from app.core.config import get_settings
@@ -40,13 +41,18 @@ async def _get_document(document_id: str) -> dict:
 @router.get("")
 async def list_documents(
     limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), status: str | None = None,
+    date_from: str | None = None, date_to: str | None = None,
     ctx: AuthContext = Depends(require("documents:read")),
 ):
-    q = {"status": status} if status else {}
+    q: dict = {"status": status} if status else {}
+    f = summary_date_filter(date_from, date_to)
+    if f:
+        # Los documentos aún en cola no tienen fecha del resumen: se muestran siempre hasta que terminen.
+        q["$or"] = [f, {"status": {"$in": ["queued", "processing"]}}]
     col = get_db()["documents"]
     total = await col.count_documents(q)
     docs = []
-    async for d in col.find(q).sort("created_at", -1).skip(offset).limit(limit):
+    async for d in col.find(q).sort([("summary_date", -1), ("created_at", -1)]).skip(offset).limit(limit):
         docs.append(document_out(d, *await _stats(d["id"])))
     return {"documents": docs, "total": total}
 

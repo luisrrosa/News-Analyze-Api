@@ -113,6 +113,10 @@ async def process_job(job_id: str) -> str:
         if not result.items:
             raise PermanentError("No se identificó ninguna noticia en el documento")
 
+        # Toda noticia necesita fecha del resumen: si el documento no la trae, se usa la fecha de carga (marcada como inferida).
+        summary_date = result.summary_date or str(document["uploaded_at"])[:10]
+        summary_date_inferred = result.summary_date is None
+
         recent = await _recent_hashes(document["id"])
         seen: list[tuple[str, int]] = []
         operations, duplicates, item_errors, flagged = [], 0, [], 0
@@ -137,7 +141,12 @@ async def process_job(job_id: str) -> str:
                     "duplicate_similarity": round(1 - best_d / 64, 4) if best_d <= RELATED_MAX else None,
                 }
                 news_id = f"news_{uuid.uuid4()}"
-                doc = _news_doc(item, {**document, "summary_date": result.summary_date}, news_id, to_hex(h), dedupe, now)
+                doc = _news_doc(item, {**document, "summary_date": summary_date}, news_id, to_hex(h), dedupe, now)
+                if summary_date_inferred:
+                    doc["inferred_fields"] = sorted(set(doc["inferred_fields"]) | {"summary_date"})
+                if doc["publication_date"] is None:
+                    doc["publication_date"], doc["date_basis"] = summary_date, "from_summary"
+                    doc["inferred_fields"] = sorted(set(doc["inferred_fields"]) | {"publication_date"})
                 operations.append(UpdateOne(
                     {"document_id": document["id"], "news_index": item.news_index},
                     {"$setOnInsert": doc},
@@ -158,7 +167,8 @@ async def process_job(job_id: str) -> str:
         status = "completed_with_warnings" if (warnings or flagged) else "completed"
         await db["documents"].update_one({"id": document["id"]}, {"$set": {
             "status": status,
-            "summary_date": result.summary_date,
+            "summary_date": summary_date,
+            "summary_date_inferred": summary_date_inferred,
             "document_type": result.document_type,
             "footer_document_number": result.footer_document_number,
             "page_count": result.page_count,

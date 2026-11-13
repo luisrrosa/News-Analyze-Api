@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 
+from app.api.dates import timestamp_filter
 from app.api.deps import AuthContext, require
 from app.core.audit import verify_chain, write_audit
 from app.core.db import get_db
@@ -9,10 +10,12 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 
 
 @router.get("/logs")
-async def logs(limit: int = Query(500, ge=1, le=2000), ctx: AuthContext = Depends(require("audit:read"))):
+async def logs(limit: int = Query(500, ge=1, le=2000), date_from: str | None = None, date_to: str | None = None,
+               ctx: AuthContext = Depends(require("audit:read"))):
+    query = timestamp_filter(date_from, date_to)
     items = [
         {**doc, "human_readable": human_readable(doc.get("action", ""))}
-        async for doc in get_db()["audit_logs"].find({}, projection={"_id": 0}).sort("seq_num", -1).limit(limit)
+        async for doc in get_db()["audit_logs"].find(query, projection={"_id": 0}).sort("seq_num", -1).limit(limit)
     ]
     # La integridad se comprueba en /audit/verify; aquí no se afirma nada.
     return {"total": len(items), "integrity_status": "NOT_VERIFIED", "logs": items}

@@ -10,7 +10,7 @@ from app.core.audit import write_audit
 from app.core.config import get_settings
 from app.core.db import iso_now
 from app.core.passwords import hash_password, password_policy_error
-from app.core.rbac import ROLE_CLAIMS, SYSTEM_ROLES
+from app.core.rbac import CLAIM_MIGRATIONS, ROLE_CLAIMS, SYSTEM_ROLES
 
 log = logging.getLogger("bootstrap")
 
@@ -55,6 +55,15 @@ async def run_bootstrap(db: AsyncDatabase) -> None:
             {"$setOnInsert": {"code": code, "claims": list(ROLE_CLAIMS[code]), "is_system": True, "created_at": now}},
             upsert=True,
         )
+
+    for key, grants in CLAIM_MIGRATIONS:
+        marker = f"migration.{key}"
+        if await db["system_configs"].find_one({"key": marker}):
+            continue
+        for code, claims in grants.items():
+            await db["roles"].update_one({"code": code}, {"$addToSet": {"claims": {"$each": claims}}})
+        await db["system_configs"].update_one({"key": marker}, {"$set": {"key": marker, "applied_at": now}}, upsert=True)
+        log.info("Migración de claims aplicada: %s", key)
 
     if await db["users"].count_documents({}, limit=1) > 0:
         return
